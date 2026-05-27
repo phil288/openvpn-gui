@@ -3,11 +3,24 @@
 QWidget {
     font-family: "Segoe UI", "Cantarell", "Ubuntu", sans-serif;
     font-size: 13px;
+    color: #e8eaed;
+}
+
+QLabel {
+    background-color: transparent;
 }
 
 QMainWindow, QWidget#central {
     background-color: #1a1d23;
     color: #e8eaed;
+}
+
+QSplitter {
+    background-color: #1a1d23;
+}
+
+QWidget#profileList {
+    background-color: #1a1d23;
 }
 
 QListWidget {
@@ -16,6 +29,10 @@ QListWidget {
     border-radius: 8px;
     padding: 6px;
     outline: none;
+}
+
+QListWidget::viewport {
+    background-color: #252830;
 }
 
 QListWidget::item {
@@ -126,7 +143,7 @@ QWidget#dropZone {
 }
 
 QWidget#dropOverlay {
-    background-color: rgba(26, 29, 35, 0.88);
+    background-color: #1a1d23;
     border: 3px dashed #3584e4;
     border-radius: 12px;
 }
@@ -145,6 +162,16 @@ QSplitter::handle {
 QDialog {
     background-color: #1a1d23;
     color: #e8eaed;
+}
+
+QDialog QLabel {
+    color: #e8eaed;
+    background-color: transparent;
+}
+
+QCheckBox {
+    color: #e8eaed;
+    spacing: 8px;
 }
 
 QLineEdit {
@@ -187,4 +214,10 @@ QMessageBox QPushButton {
 
 QMessageBox QPushButton:hover {
     background-color: #4a5060;
+}
+
+QLabel#adminPasswordError {
+    color: #f66151;
+    font-weight: 600;
+    margin-top: 4px;
 }

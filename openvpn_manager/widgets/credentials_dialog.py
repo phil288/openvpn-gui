@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from openvpn_manager.widgets.theme import enable_styled_background
+
 
 class CredentialsDialog(QDialog):
     """Username/password entry with optional remember."""
@@ -25,6 +27,7 @@ class CredentialsDialog(QDialog):
         parent=None,
     ) -> None:
         super().__init__(parent)
+        enable_styled_background(self)
         self.setWindowTitle("VPN Credentials")
         self.setMinimumWidth(360)
 

@@ -7,7 +7,7 @@ cd "$SCRIPT_DIR"
 
 VENV_DIR="${VENV_DIR:-$SCRIPT_DIR/.venv}"
 INSTALL_DESKTOP="${INSTALL_DESKTOP:-1}"
-INSTALL_POLKIT="${INSTALL_POLKIT:-1}"
+INSTALL_POLKIT="${INSTALL_POLKIT:-0}"
 INSTALL_SYSTEM_DEPS="${INSTALL_SYSTEM_DEPS:-0}"
 
 RED='\033[0;31m'
@@ -23,12 +23,11 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Install OpenVPN Manager into a local Python virtualenv and set up
-PolicyKit + desktop launcher.
+Install OpenVPN Manager into a local Python virtualenv and desktop launcher.
 
 Options:
   --system-deps     Install openvpn and python3-devel via dnf (Fedora)
-  --no-polkit       Skip PolicyKit policy (pkexec will not work)
+  --polkit          Install legacy PolicyKit policy (not required; app uses sudo cache)
   --no-desktop      Skip ~/.local/share/applications launcher
   --venv PATH       Virtualenv directory (default: $SCRIPT_DIR/.venv)
   -h, --help        Show this help
@@ -46,8 +45,8 @@ while [[ $# -gt 0 ]]; do
             INSTALL_SYSTEM_DEPS=1
             shift
             ;;
-        --no-polkit)
-            INSTALL_POLKIT=0
+        --polkit)
+            INSTALL_POLKIT=1
             shift
             ;;
         --no-desktop)
@@ -121,22 +120,15 @@ info "Installing OpenVPN Manager (editable)…"
 "$VENV_DIR/bin/pip" install --upgrade pip wheel
 "$VENV_DIR/bin/pip" install -e "$SCRIPT_DIR"
 
-# --- PolicyKit ---
+# --- PolicyKit (legacy, optional) ---
 if [[ "$INSTALL_POLKIT" == "1" ]]; then
-    if ! command -v pkexec &>/dev/null; then
-        warn "pkexec not found; VPN connect may fail without PolicyKit."
-    else
-        POLKIT_DST="/usr/share/polkit-1/actions/com.openvpnmanager.policy"
-        POLKIT_TMP="$(mktemp)"
-        sed "s|/usr/bin/openvpn|${OPENVPN_BIN}|g" \
-            "$SCRIPT_DIR/packaging/com.openvpnmanager.policy" > "$POLKIT_TMP"
-        info "Installing PolicyKit action (sudo) → $POLKIT_DST"
-        info "  openvpn path: $OPENVPN_BIN"
-        sudo install -m 0644 "$POLKIT_TMP" "$POLKIT_DST"
-        rm -f "$POLKIT_TMP"
-    fi
-else
-    warn "Skipped PolicyKit policy (--no-polkit)."
+    POLKIT_DST="/usr/share/polkit-1/actions/com.openvpnmanager.policy"
+    POLKIT_TMP="$(mktemp)"
+    sed "s|/usr/bin/openvpn|${OPENVPN_BIN}|g" \
+        "$SCRIPT_DIR/packaging/com.openvpnmanager.policy" > "$POLKIT_TMP"
+    info "Installing legacy PolicyKit action (sudo) → $POLKIT_DST"
+    sudo install -m 0644 "$POLKIT_TMP" "$POLKIT_DST"
+    rm -f "$POLKIT_TMP"
 fi
 
 # --- MIME type + desktop launcher ---
@@ -201,4 +193,4 @@ if [[ "$INSTALL_DESKTOP" == "1" ]]; then
     echo ""
 fi
 echo "  Uninstall desktop entry: rm ~/.local/share/applications/openvpn-manager.desktop"
-echo "  Uninstall polkit policy: sudo rm /usr/share/polkit-1/actions/com.openvpnmanager.policy"
+echo "  VPN connects use sudo with a cached login password (stored in your system keyring if you choose Remember)."

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from openvpn_manager.backend.profile_store import parse_ovpn_config
 from openvpn_manager.widgets.ovpn_drop import OvpnDropMixin
+from openvpn_manager.widgets.theme import enable_styled_background
 
 
 class DropZone(OvpnDropMixin, QWidget):
@@ -28,6 +29,7 @@ class DropZone(OvpnDropMixin, QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        enable_styled_background(self)
         self.setAcceptDrops(True)
         self.setMinimumHeight(120)
         self.setObjectName("dropZone")
@@ -55,6 +57,7 @@ class ImportDialog(QDialog):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        enable_styled_background(self)
         self.setWindowTitle("Import Profile")
         self.setMinimumWidth(480)
         self._source_path: Path | None = None

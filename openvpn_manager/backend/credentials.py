@@ -5,6 +5,7 @@ from __future__ import annotations
 import keyring
 
 SERVICE_NAME = "openvpn-manager"
+ADMIN_PASSWORD_KEY = "admin:elevate"
 
 
 def _username_key(profile_id: str) -> str:
@@ -41,3 +42,23 @@ def delete_credentials(profile_id: str) -> None:
 
 def has_credentials(profile_id: str) -> bool:
     return load_credentials(profile_id) is not None
+
+
+def save_admin_password(password: str) -> None:
+    """Store the user's login password for sudo caching (system keyring)."""
+    keyring.set_password(SERVICE_NAME, ADMIN_PASSWORD_KEY, password)
+
+
+def load_admin_password() -> str | None:
+    return keyring.get_password(SERVICE_NAME, ADMIN_PASSWORD_KEY)
+
+
+def has_admin_password() -> bool:
+    return load_admin_password() is not None
+
+
+def delete_admin_password() -> None:
+    try:
+        keyring.delete_password(SERVICE_NAME, ADMIN_PASSWORD_KEY)
+    except keyring.errors.PasswordDeleteError:
+        pass

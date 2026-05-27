@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import getpass
-import os
 import re
+import signal
+from os import close as os_close
+from os import environ as os_environ
+from os import fspath as os_fspath
+from os import getpid as os_getpid
+from os import getuid as os_getuid
+from os import kill as os_kill
 import threading
 from collections.abc import Callable
 import socket
@@ -16,14 +22,25 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 
+from openvpn_manager.backend.privilege import (
+    needs_elevation,
+    openvpn_binary,
+    sudo_ticket_valid,
+    wrap_openvpn_command,
+)
+
 MANAGEMENT_HOST = "127.0.0.1"
 POLL_INTERVAL_SEC = 2.0
 CONNECT_TIMEOUT_SEC = 120.0
 
 
 def _runtime_dir() -> Path:
-    base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    path = Path(base) / "openvpn-manager"
+    override = os_environ.get("OPENVPN_MANAGER_RUNTIME_DIR")
+    if override:
+        path = Path(override)
+    else:
+        base = os_environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os_getuid()}"
+        path = Path(base) / "openvpn-manager"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -71,7 +88,7 @@ class ManagementClient:
                         raise OSError("socket not created yet")
                     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                     sock.settimeout(5.0)
-                    sock.connect(os.fspath(self._unix_path))
+                    sock.connect(os_fspath(self._unix_path))
                 else:
                     sock = socket.create_connection(
                         (self._host, self._port), timeout=2.0
@@ -179,6 +196,21 @@ class VpnWorker(QThread):
         if self._mgmt:
             self._mgmt.signal_stop()
             self._mgmt.close()
+        pid_file = self._pid_file_path()
+        if pid_file.is_file():
+            try:
+                ovpn_pid = int(pid_file.read_text(encoding="utf-8").strip())
+                if needs_elevation():
+                    subprocess.run(
+                        ["sudo", "-n", "kill", str(ovpn_pid)],
+                        capture_output=True,
+                        timeout=5,
+                        check=False,
+                    )
+                else:
+                    os_kill(ovpn_pid, signal.SIGTERM)
+            except (OSError, ValueError):
+                pass
         if self._process and self._process.poll() is None:
             try:
                 self._process.terminate()
@@ -186,21 +218,19 @@ class VpnWorker(QThread):
                 pass
 
     def _mgmt_socket_path(self) -> Path:
-        path = _runtime_dir() / f"mgmt-{os.getpid()}-{time.time_ns()}.sock"
+        path = _runtime_dir() / f"mgmt-{os_getpid()}-{time.time_ns()}.sock"
         path.unlink(missing_ok=True)
         return path
 
     def _build_command(self, mgmt_socket: Path) -> list[str]:
         user = getpass.getuser()
         args = [
-            "pkexec",
-            "--action",
-            "com.openvpnmanager.run-openvpn",
-            "openvpn",
+            openvpn_binary(),
+            "--disable-dco",
             "--config",
             str(self._config_path),
             "--management",
-            os.fspath(mgmt_socket),
+            os_fspath(mgmt_socket),
             "unix",
             "--management-client-user",
             user,
@@ -209,18 +239,22 @@ class VpnWorker(QThread):
             "--verb",
             "3",
             "--writepid",
-            os.fspath(_runtime_dir() / f"openvpn-{os.getpid()}.pid"),
+            os_fspath(self._pid_file_path()),
         ]
         if self._username and self._password:
             fd, path = tempfile.mkstemp(prefix="ovpn-auth-", suffix=".txt")
-            os.close(fd)
+            os_close(fd)
             self._auth_file = Path(path)
             self._auth_file.write_text(
                 f"{self._username}\n{self._password}\n", encoding="utf-8"
             )
             self._auth_file.chmod(0o600)
             args.extend(["--auth-user-pass", str(self._auth_file)])
-        return args
+        args.extend(["--dev", "tun"])
+        return wrap_openvpn_command(args)
+
+    def _pid_file_path(self) -> Path:
+        return _runtime_dir() / f"openvpn-{os_getpid()}.pid"
 
     def _cleanup_auth_file(self) -> None:
         if self._auth_file and self._auth_file.is_file():
@@ -253,7 +287,7 @@ class VpnWorker(QThread):
         return 0, 0
 
     def _start_output_reader(self) -> None:
-        """Drain pkexec/openvpn stdout so the child cannot block on a full pipe."""
+        """Drain openvpn stdout so the child cannot block on a full pipe."""
         proc = self._process
         if not proc or not proc.stdout:
             return
@@ -300,8 +334,17 @@ class VpnWorker(QThread):
         self.status_changed.emit(stats.state)
 
         try:
+            if needs_elevation() and not sudo_ticket_valid():
+                raise RuntimeError(
+                    "Administrator access expired. Connect again and enter your "
+                    "login password when prompted."
+                )
             cmd = self._build_command(self._mgmt_socket)
-            self.log_line.emit(f"Launching OpenVPN (approve PolicyKit if prompted)…")
+            self.log_line.emit(
+                "Launching: "
+                + " ".join(cmd[:3])
+                + (" …" if len(cmd) > 3 else "")
+            )
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -311,16 +354,14 @@ class VpnWorker(QThread):
             )
             self._start_output_reader()
 
-            # Fail fast if pkexec/openvpn exits (e.g. denied PolicyKit or bad config)
             self._interruptible_sleep(0.5)
             if self._process.poll() is not None:
                 code = self._process.returncode
                 raise RuntimeError(
                     f"OpenVPN exited immediately (code {code}). "
-                    "Check PolicyKit approval and the log above."
+                    "Check the log above (sudo cache may have expired)."
                 )
 
-            # pkexec may take time while the user enters their password
             self.log_line.emit(f"Waiting for management socket: {self._mgmt_socket}")
             self._mgmt = ManagementClient(unix_path=self._mgmt_socket)
             self._mgmt.connect(

@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
 
+from openvpn_manager.backend import credentials as cred_store
+from openvpn_manager.backend import privilege
 from openvpn_manager.backend.profile_store import list_profiles
 from openvpn_manager.backend.vpn_process import VpnController
 from openvpn_manager.main_window import MainWindow
@@ -35,6 +37,8 @@ def _resource_path(name: str) -> Path:
 
 
 def _load_stylesheet(app: QApplication) -> None:
+    # Fusion renders application QSS reliably on Linux (native themes often do not).
+    app.setStyle("Fusion")
     qss = _resource_path("style.qss")
     if qss.is_file():
         app.setStyleSheet(qss.read_text(encoding="utf-8"))
@@ -188,6 +192,7 @@ class OpenVpnManagerApp(QApplication):
             self, self._window, self._vpn, on_exit=self.shutdown
         )
         self._pending_ovpn = ovpn_paths_from_argv(argv)
+        QTimer.singleShot(0, self._warm_sudo_cache)
 
         def _on_connected_notify() -> None:
             if self._tray and self._tray._tray:
@@ -199,6 +204,14 @@ class OpenVpnManagerApp(QApplication):
     def _on_profiles_changed(self) -> None:
         if self._tray:
             self._tray.refresh()
+
+    def _warm_sudo_cache(self) -> None:
+        """Restore sudo timestamp from keyring on startup when possible."""
+        if not privilege.needs_elevation():
+            return
+        stored = cred_store.load_admin_password()
+        if stored and not privilege.cache_sudo_password(stored):
+            cred_store.delete_admin_password()
 
     def shutdown(self) -> None:
         """Clean exit: disconnect VPN, release tray, stop event loop."""

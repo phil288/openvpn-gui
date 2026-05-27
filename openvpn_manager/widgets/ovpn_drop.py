@@ -8,6 +8,8 @@ from PySide6.QtCore import Qt, Signal, QMimeData
 from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
+from openvpn_manager.widgets.theme import enable_styled_background
+
 OVPN_SUFFIX = ".ovpn"
 
 
@@ -66,6 +68,7 @@ class DropOverlay(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        enable_styled_background(self)
         self.setObjectName("dropOverlay")
         self.setAcceptDrops(True)
         self.hide()

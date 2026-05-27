@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from openvpn_manager.backend.profile_store import Profile
+from openvpn_manager.widgets.theme import enable_styled_background
 
 
 class ProfileListWidget(QWidget):
@@ -22,6 +23,8 @@ class ProfileListWidget(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self.setObjectName("profileList")
+        enable_styled_background(self)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 

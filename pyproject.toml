@@ -9,6 +9,12 @@ dependencies = [
     "keyring>=25.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+]
+
 [project.scripts]
 openvpn-manager = "openvpn_manager.app:main"
 
@@ -22,3 +28,7 @@ include = ["openvpn_manager*"]
 
 [tool.setuptools.package-data]
 openvpn_manager = ["resources/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+pythonpath = ["."]

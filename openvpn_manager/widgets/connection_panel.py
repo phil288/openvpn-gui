@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from openvpn_manager.backend.profile_store import Profile
 from openvpn_manager.backend.vpn_process import ConnectionStats
+from openvpn_manager.widgets.theme import enable_styled_background
 
 
 def _format_bytes(n: int) -> str:
@@ -46,6 +47,7 @@ class ConnectionPanel(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        enable_styled_background(self)
         self._profile: Profile | None = None
         self._connected = False
         self._connected_since: float | None = None

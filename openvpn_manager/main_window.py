@@ -9,6 +9,7 @@ from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDro
 from PySide6.QtWidgets import QHBoxLayout, QSplitter, QWidget
 
 from openvpn_manager.backend import credentials as cred_store
+from openvpn_manager.backend import privilege
 from openvpn_manager.backend.profile_store import (
     Profile,
     delete_profile,
@@ -20,11 +21,13 @@ from openvpn_manager.backend.profile_store import (
 )
 from openvpn_manager.backend.vpn_process import ConnectionStats, VpnController
 from openvpn_manager.widgets.connection_panel import ConnectionPanel
+from openvpn_manager.widgets.admin_password_dialog import AdminPasswordDialog
 from openvpn_manager.widgets.credentials_dialog import CredentialsDialog
-from openvpn_manager.widgets.import_dialog import ImportDialog
 from openvpn_manager.widgets.message_boxes import critical, question_yes_no, warning
+from openvpn_manager.widgets.import_dialog import ImportDialog
 from openvpn_manager.widgets.ovpn_drop import DropOverlay, OvpnDropMixin, paths_from_mime
 from openvpn_manager.widgets.profile_list import ProfileListWidget
+from openvpn_manager.widgets.theme import enable_styled_background
 
 
 class MainWindow(OvpnDropMixin, QWidget):
@@ -34,6 +37,8 @@ class MainWindow(OvpnDropMixin, QWidget):
 
     def __init__(self, vpn: VpnController, parent=None) -> None:
         super().__init__(parent)
+        self.setObjectName("central")
+        enable_styled_background(self)
         self._vpn = vpn
         self._selected_id: str | None = None
         self.setWindowTitle("OpenVPN Manager")
@@ -106,9 +111,41 @@ class MainWindow(OvpnDropMixin, QWidget):
             self._panel.append_log("Disconnecting…")
         self._vpn.disconnect()
 
+    def _ensure_elevation(self) -> bool:
+        """Cache sudo credentials when needed (keyring + sudo timestamp)."""
+        if not privilege.needs_elevation():
+            return True
+        if privilege.sudo_ticket_valid():
+            return True
+
+        stored = cred_store.load_admin_password()
+        if stored and privilege.cache_sudo_password(stored):
+            return True
+        if stored:
+            cred_store.delete_admin_password()
+
+        error = ""
+        dlg = AdminPasswordDialog(self, error_message=error)
+        while True:
+            if error:
+                dlg.set_error(error)
+            if dlg.exec() != AdminPasswordDialog.DialogCode.Accepted:
+                return False
+            if privilege.cache_sudo_password(dlg.password()):
+                if dlg.remember():
+                    cred_store.save_admin_password(dlg.password())
+                else:
+                    cred_store.delete_admin_password()
+                return True
+            error = "Incorrect password. Please try again."
+            cred_store.delete_admin_password()
+
     def _connect_profile(self, profile_id: str) -> None:
         profile = get_profile(profile_id)
         if not profile:
+            return
+
+        if not self._ensure_elevation():
             return
 
         username, password = "", ""
