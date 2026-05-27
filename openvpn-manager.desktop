@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=OpenVPN Manager
+Comment=Manage OpenVPN connections
+Exec=openvpn-manager %F
+Icon=openvpn-manager
+Categories=Network;Security;
+MimeType=application/x-openvpn-profile;
+StartupNotify=true
+Terminal=false

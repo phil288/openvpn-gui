@@ -1,0 +1,190 @@
+/* OpenVPN Manager — Qt stylesheet */
+
+QWidget {
+    font-family: "Segoe UI", "Cantarell", "Ubuntu", sans-serif;
+    font-size: 13px;
+}
+
+QMainWindow, QWidget#central {
+    background-color: #1a1d23;
+    color: #e8eaed;
+}
+
+QListWidget {
+    background-color: #252830;
+    border: 1px solid #3a3f4b;
+    border-radius: 8px;
+    padding: 6px;
+    outline: none;
+}
+
+QListWidget::item {
+    padding: 12px 10px;
+    border-radius: 6px;
+    margin: 2px 0;
+}
+
+QListWidget::item:selected {
+    background-color: #3584e4;
+    color: #ffffff;
+}
+
+QListWidget::item:hover:!selected {
+    background-color: #2f333d;
+}
+
+QLabel#profileTitle {
+    font-size: 20px;
+    font-weight: 600;
+}
+
+QLabel#profileSubtitle {
+    color: #9aa0a6;
+    margin-bottom: 8px;
+}
+
+QLabel#statusBadge {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-weight: 600;
+    font-size: 11px;
+}
+
+QLabel#statusBadge[status="connected"] {
+    background-color: #2ec27e;
+    color: #ffffff;
+}
+
+QLabel#statusBadge[status="disconnected"] {
+    background-color: #3a3f4b;
+    color: #9aa0a6;
+}
+
+QPushButton#connectButton {
+    background-color: #3584e4;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 24px;
+    font-weight: 600;
+    min-width: 120px;
+}
+
+QPushButton#connectButton:hover {
+    background-color: #4a9af5;
+}
+
+QPushButton#connectButton:pressed {
+    background-color: #2a6fc9;
+}
+
+QPushButton {
+    background-color: #2f333d;
+    color: #e8eaed;
+    border: 1px solid #3a3f4b;
+    border-radius: 6px;
+    padding: 8px 16px;
+}
+
+QPushButton:hover {
+    background-color: #3a3f4b;
+}
+
+QPushButton:disabled {
+    color: #5f6368;
+    background-color: #252830;
+}
+
+QGroupBox {
+    border: 1px solid #3a3f4b;
+    border-radius: 8px;
+    margin-top: 12px;
+    padding-top: 16px;
+    font-weight: 600;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 6px;
+    color: #9aa0a6;
+}
+
+QPlainTextEdit {
+    background-color: #12141a;
+    color: #c4c7c5;
+    border: 1px solid #3a3f4b;
+    border-radius: 6px;
+    font-family: "JetBrains Mono", "Consolas", monospace;
+    font-size: 11px;
+}
+
+QWidget#dropZone {
+    background-color: #252830;
+    border: 2px dashed #3584e4;
+    border-radius: 12px;
+}
+
+QWidget#dropOverlay {
+    background-color: rgba(26, 29, 35, 0.88);
+    border: 3px dashed #3584e4;
+    border-radius: 12px;
+}
+
+QLabel#dropOverlayHint {
+    font-size: 22px;
+    font-weight: 600;
+    color: #3584e4;
+}
+
+QSplitter::handle {
+    background-color: #3a3f4b;
+    width: 2px;
+}
+
+QDialog {
+    background-color: #1a1d23;
+    color: #e8eaed;
+}
+
+QLineEdit {
+    background-color: #252830;
+    border: 1px solid #3a3f4b;
+    border-radius: 6px;
+    padding: 8px;
+    color: #e8eaed;
+}
+
+QMenu {
+    background-color: #252830;
+    border: 1px solid #3a3f4b;
+    padding: 4px;
+}
+
+QMenu::item:selected {
+    background-color: #3584e4;
+}
+
+QMessageBox {
+    background-color: #2b2f38;
+    color: #e8eaed;
+}
+
+QMessageBox QLabel {
+    color: #e8eaed;
+    background-color: transparent;
+    min-width: 300px;
+}
+
+QMessageBox QPushButton {
+    background-color: #3a3f4b;
+    color: #e8eaed;
+    border: 1px solid #4a5060;
+    border-radius: 6px;
+    padding: 6px 16px;
+    min-width: 72px;
+}
+
+QMessageBox QPushButton:hover {
+    background-color: #4a5060;
+}

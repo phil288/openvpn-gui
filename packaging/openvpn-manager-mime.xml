@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-openvpn-profile">
+    <comment>OpenVPN connection profile</comment>
+    <comment xml:lang="en">OpenVPN connection profile</comment>
+    <glob pattern="*.ovpn"/>
+    <icon name="openvpn-manager"/>
+  </mime-type>
+</mime-info>
