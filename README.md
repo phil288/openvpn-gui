@@ -1,6 +1,6 @@
 # OpenVPN Manager
 
-Desktop GUI for managing OpenVPN connections on Fedora — similar to OpenVPN Connect on Windows.
+Desktop GUI for managing OpenVPN connections on Fedora and Ubuntu — similar to OpenVPN Connect on Windows.
 
 ## Features
 
@@ -14,18 +14,38 @@ Desktop GUI for managing OpenVPN connections on Fedora — similar to OpenVPN Co
 
 ## Requirements
 
-- Fedora or Linux with `sudo` and Python 3.11+
-- `openvpn`: `sudo dnf install openvpn`
+- Fedora, Ubuntu, or another Linux with `sudo` and Python 3.11+
+- `openvpn`:
+  - Fedora: `sudo dnf install openvpn`
+  - Ubuntu: `sudo apt install openvpn`
 
 ## Install
 
 ```bash
-cd /home/phil/dev/openvpn
+cd openvpn-connect
 ./install.sh
-
-# First-time on a clean system:
-./install.sh --system-deps
 ```
+
+`./install.sh` creates a local virtualenv and a desktop launcher. It needs
+`openvpn` and Python 3.11+ already present.
+
+**Fedora** — install the system dependencies automatically:
+
+```bash
+./install.sh --system-deps   # uses dnf
+```
+
+**Ubuntu** — install the system dependencies first, then run the installer:
+
+```bash
+sudo apt update
+sudo apt install openvpn python3 python3-venv python3-pip
+./install.sh
+```
+
+> `--system-deps` only supports `dnf` (Fedora/RHEL). On Ubuntu install the
+> packages with `apt` as shown above; the installer detects the existing
+> `openvpn` and Python.
 
 ## Run
 
