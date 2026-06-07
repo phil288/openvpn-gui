@@ -1,0 +1,5 @@
+#!/bin/sh
+# Auto-bump the app patch version when a commit stages openvpn_manager source.
+# Tracked hook — activated with: git config core.hooksPath scripts/git-hooks
+root="$(git rev-parse --show-toplevel)"
+exec python3 "$root/scripts/bump_version.py" --git
