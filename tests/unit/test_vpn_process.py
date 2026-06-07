@@ -51,3 +51,42 @@ def test_build_command_without_credentials(runtime_dir: Path) -> None:
 def test_runtime_dir_uses_override(runtime_dir: Path, monkeypatch) -> None:
     monkeypatch.setenv("OPENVPN_MANAGER_RUNTIME_DIR", str(runtime_dir / "rt"))
     assert _runtime_dir() == runtime_dir / "rt"
+
+
+def _worker() -> VpnWorker:
+    return VpnWorker(Path("/tmp/profile.ovpn"), 0)
+
+
+def test_parse_state_from_command_response() -> None:
+    """The `state` command response has no `>STATE:` prefix and ends with END."""
+    resp = (
+        "1700000000,CONNECTING,,,,,,\n"
+        "1700000005,CONNECTED,SUCCESS,10.8.0.2,203.0.113.5,1194,,\n"
+        "END\n"
+    )
+    assert _worker()._parse_state(resp) == "CONNECTED"
+
+
+def test_parse_state_returns_most_recent() -> None:
+    resp = (
+        "1700000005,CONNECTED,SUCCESS,10.8.0.2,,,,\n"
+        "1700000010,RECONNECTING,ping-restart,,,,,\n"
+        "END\n"
+    )
+    assert _worker()._parse_state(resp) == "RECONNECTING"
+
+
+def test_parse_state_realtime_notification() -> None:
+    resp = ">STATE:1700000005,CONNECTED,SUCCESS,10.8.0.2,203.0.113.5,1194,,\n"
+    assert _worker()._parse_state(resp) == "CONNECTED"
+
+
+def test_parse_state_not_connected_while_connecting() -> None:
+    """Regression: must not report CONNECTED before the tunnel is up."""
+    resp = "1700000000,WAIT,,,,,,\nEND\n"
+    assert _worker()._parse_state(resp) == "WAIT"
+
+
+def test_parse_state_ignores_bytecount_noise() -> None:
+    resp = "1700000005,CONNECTED,SUCCESS,10.8.0.2,,,,\nEND\n>BYTECOUNT:123,456\n"
+    assert _worker()._parse_state(resp) == "CONNECTED"

@@ -49,6 +49,7 @@ class ConnectionPanel(QWidget):
         super().__init__(parent)
         enable_styled_background(self)
         self._profile: Profile | None = None
+        self._session_active = False
         self._connected = False
         self._connected_since: float | None = None
 
@@ -112,12 +113,19 @@ class ConnectionPanel(QWidget):
         layout.addWidget(log_box, 1)
 
     def _on_connect_btn(self) -> None:
-        if self._connected:
+        # A running session (even while still connecting) means the button
+        # acts as Disconnect; only an idle profile triggers a connect.
+        if self._session_active:
             self.disconnect_clicked.emit()
         else:
             self.connect_clicked.emit()
 
-    def set_profile(self, profile: Profile | None, is_active: bool = False) -> None:
+    def set_profile(
+        self,
+        profile: Profile | None,
+        is_active: bool = False,
+        is_connected: bool = False,
+    ) -> None:
         self._profile = profile
         if not profile:
             self._title.setText("Select a profile")
@@ -137,27 +145,40 @@ class ConnectionPanel(QWidget):
         self._connect_btn.setEnabled(True)
         self._cred_btn.setEnabled(profile.needs_auth)
         self._delete_btn.setEnabled(not is_active)
-        self._set_connected_ui(is_active)
+        self._render_status(active=is_active, connected=is_connected)
 
-    def _set_connected_ui(self, connected: bool) -> None:
+    def _render_status(
+        self, active: bool, connected: bool, label: str | None = None
+    ) -> None:
+        """Update the button + badge.
+
+        ``active`` reflects whether a session worker is running (drives the
+        Connect/Disconnect button); ``connected`` reflects whether OpenVPN
+        has actually established the tunnel (drives the badge).
+        """
+        self._session_active = active
         self._connected = connected
+        self._connect_btn.setText("Disconnect" if active else "Connect")
         if connected:
-            self._connect_btn.setText("Disconnect")
-            self._status_badge.setText("Connected")
-            self._status_badge.setProperty("status", "connected")
+            text, status = "Connected", "connected"
+        elif label:
+            text, status = label, "disconnected"
+        elif active:
+            text, status = "Connecting…", "disconnected"
         else:
-            self._connect_btn.setText("Connect")
-            self._status_badge.setText("Disconnected")
-            self._status_badge.setProperty("status", "disconnected")
+            text, status = "Disconnected", "disconnected"
+        self._status_badge.setText(text)
+        self._status_badge.setProperty("status", status)
         self._status_badge.style().unpolish(self._status_badge)
         self._status_badge.style().polish(self._status_badge)
 
     def set_connection_state(
-        self, connected: bool, state_label: str | None = None
+        self,
+        active: bool,
+        connected: bool,
+        state_label: str | None = None,
     ) -> None:
-        self._set_connected_ui(connected)
-        if state_label and not connected:
-            self._status_badge.setText(state_label)
+        self._render_status(active=active, connected=connected, label=state_label)
 
     def update_stats(self, stats: ConnectionStats) -> None:
         import time

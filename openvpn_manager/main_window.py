@@ -88,7 +88,10 @@ class MainWindow(OvpnDropMixin, QWidget):
         if self._selected_id:
             self._profile_list.select_profile(self._selected_id)
             p = get_profile(self._selected_id)
-            self._panel.set_profile(p, self._selected_id == active)
+            is_active = self._selected_id == active
+            self._panel.set_profile(
+                p, is_active, is_active and self._vpn.is_tunnel_connected
+            )
         elif profiles:
             self._profile_list.select_profile(profiles[0].id)
         self.profiles_changed.emit()
@@ -97,9 +100,9 @@ class MainWindow(OvpnDropMixin, QWidget):
         self._selected_id = profile_id
         p = get_profile(profile_id)
         active = self._vpn.active_profile_id == profile_id
-        self._panel.set_profile(p, active)
-        if active:
-            self._panel.set_connection_state(True)
+        self._panel.set_profile(
+            p, active, active and self._vpn.is_tunnel_connected
+        )
 
     def _on_connect_clicked(self) -> None:
         if self._selected_id:
@@ -107,7 +110,7 @@ class MainWindow(OvpnDropMixin, QWidget):
 
     def _on_disconnect_clicked(self) -> None:
         if self._vpn.is_connected:
-            self._panel.set_connection_state(False, "Disconnecting…")
+            self._panel.set_connection_state(False, False, "Disconnecting…")
             self._panel.append_log("Disconnecting…")
         self._vpn.disconnect()
 
@@ -165,7 +168,7 @@ class MainWindow(OvpnDropMixin, QWidget):
         self._panel.clear_log()
         self._panel.reset_stats()
         self._panel.append_log(f"Connecting to {profile.name}…")
-        self._panel.set_connection_state(False, "Connecting…")
+        self._panel.set_connection_state(True, False, "Connecting…")
         self._vpn.connect_profile(
             profile_id,
             Path(profile.config_path),
@@ -314,10 +317,10 @@ class MainWindow(OvpnDropMixin, QWidget):
         active = self._vpn.active_profile_id == self._selected_id
         if active:
             if state == "DISCONNECTING":
-                self._panel.set_connection_state(False, "Disconnecting…")
+                self._panel.set_connection_state(False, False, "Disconnecting…")
             else:
                 connected = state == "CONNECTED"
-                self._panel.set_connection_state(connected, state)
+                self._panel.set_connection_state(True, connected, state)
             self.refresh_profiles()
 
     def _on_stats(self, stats: ConnectionStats) -> None:
@@ -325,17 +328,17 @@ class MainWindow(OvpnDropMixin, QWidget):
             self._panel.update_stats(stats)
 
     def _on_connected(self) -> None:
-        self._panel.set_connection_state(True)
+        self._panel.set_connection_state(True, True)
         self.refresh_profiles()
 
     def _on_disconnected(self) -> None:
-        self._panel.set_connection_state(False)
+        self._panel.set_connection_state(False, False)
         self._panel.reset_stats()
         self.refresh_profiles()
 
     def _on_error(self, message: str) -> None:
         self._panel.append_log(f"Error: {message}")
-        self._panel.set_connection_state(False, "Error")
+        self._panel.set_connection_state(False, False, "Error")
         warning(self, "Connection error", message)
         self.refresh_profiles()
 

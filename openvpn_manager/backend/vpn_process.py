@@ -265,12 +265,26 @@ class VpnWorker(QThread):
             self._auth_file = None
 
     def _parse_state(self, response: str) -> str:
-        for line in response.splitlines():
+        """Return the most recent OpenVPN state name.
+
+        Handles both the asynchronous real-time notification form
+        (``>STATE:<time>,CONNECTED,...``) and the ``state`` command
+        response form, whose history lines have no ``>STATE:`` prefix
+        (``<time>,CONNECTED,SUCCESS,...``) and end with ``END``.
+        """
+        state = ""
+        for raw in response.splitlines():
+            line = raw.strip()
+            if not line or line == "END":
+                continue
             if line.startswith(">STATE:"):
-                parts = line.split(",", 4)
-                if len(parts) >= 2:
-                    return parts[1].strip()
-        return ""
+                line = line[len(">STATE:"):]
+            elif line.startswith(">"):
+                continue  # other real-time notification (BYTECOUNT, LOG, …)
+            parts = line.split(",")
+            if len(parts) >= 2 and parts[0].isdigit() and parts[1].strip():
+                state = parts[1].strip()  # keep the last (newest) entry
+        return state
 
     def _parse_bytecount(self, response: str) -> tuple[int, int]:
         for line in response.splitlines():
@@ -459,10 +473,17 @@ class VpnController(QObject):
         self._worker: VpnWorker | None = None
         self._active_profile_id: str | None = None
         self._pending_connect: tuple[str, Path, str, str] | None = None
+        self._tunnel_connected = False
 
     @property
     def is_connected(self) -> bool:
+        """True while a session worker is running (not necessarily up)."""
         return self._worker is not None and self._worker.isRunning()
+
+    @property
+    def is_tunnel_connected(self) -> bool:
+        """True only once OpenVPN reports the tunnel is fully CONNECTED."""
+        return self._tunnel_connected
 
     @property
     def active_profile_id(self) -> str | None:
@@ -489,8 +510,9 @@ class VpnController(QObject):
         password: str,
     ) -> None:
         self._active_profile_id = profile_id
+        self._tunnel_connected = False
         self._worker = VpnWorker(config_path, 0, username, password)
-        self._worker.status_changed.connect(self.status_changed.emit)
+        self._worker.status_changed.connect(self._on_worker_status)
         self._worker.stats_updated.connect(self.stats_updated.emit)
         self._worker.log_line.connect(self.log_line.emit)
         self._worker.connected.connect(self.connected.emit)
@@ -516,6 +538,14 @@ class VpnController(QObject):
     def _clear_worker(self) -> None:
         self._worker = None
         self._active_profile_id = None
+        self._tunnel_connected = False
+
+    def _on_worker_status(self, state: str) -> None:
+        # Keep the authoritative tunnel state in sync with what OpenVPN
+        # reports so the UI never shows "Connected" before the tunnel is up
+        # (or after it drops into RECONNECTING).
+        self._tunnel_connected = state == "CONNECTED"
+        self.status_changed.emit(state)
 
     def _on_worker_disconnected(self, _state: str) -> None:
         pass
