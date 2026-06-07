@@ -68,9 +68,12 @@ def question_yes_no(
 
 
 def confirm_kill_all(parent: QWidget | None, process_count: int) -> bool:
+    if process_count == 1:
+        target = "the running OpenVPN Manager process"
+    else:
+        target = f"all {process_count} OpenVPN Manager processes"
     text = (
-        f"This will force-stop all {process_count} OpenVPN Manager "
-        f"process{'es' if process_count != 1 else ''} for your user.\n\n"
+        f"This will force-stop {target} for your user.\n\n"
         "Any active VPN connection will be dropped."
     )
     buttons = QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No

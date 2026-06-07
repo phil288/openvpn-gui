@@ -1,6 +1,6 @@
 [project]
 name = "openvpn-manager"
-version = "0.1.2"
+version = "0.1.3"
 description = "Desktop OpenVPN connection manager for Fedora"
 readme = "README.md"
 license = "MIT"
