@@ -45,6 +45,39 @@ def _runtime_dir() -> Path:
     return path
 
 
+def _resolve_ipv4(host: str) -> str | None:
+    """Return an IPv4 (A-record) address for host, or None if it has none."""
+    try:
+        infos = socket.getaddrinfo(host, None, family=socket.AF_INET)
+    except (socket.gaierror, OSError):
+        return None
+    for info in infos:
+        addr = info[4][0]
+        if addr:
+            return addr
+    return None
+
+
+def _ipv4_route_available(ipv4: str) -> bool:
+    """True if the host has a native IPv4 route able to reach ``ipv4``.
+
+    Uses a UDP "connect" which sends no packets but fails fast with
+    ENETUNREACH when there is no usable IPv4 path (e.g. an IPv6-only /
+    NAT64 network), letting us leave such setups on their working path.
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError:
+        return False
+    try:
+        sock.connect((ipv4, 9))  # discard port; UDP connect transmits nothing
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
 @dataclass
 class ConnectionStats:
     state: str = "DISCONNECTED"
@@ -250,8 +283,66 @@ class VpnWorker(QThread):
             )
             self._auth_file.chmod(0o600)
             args.extend(["--auth-user-pass", str(self._auth_file)])
+        forced_proto = self._preferred_ipv4_proto()
+        if forced_proto:
+            args.extend(["--proto", forced_proto])
         args.extend(["--dev", "tun"])
         return wrap_openvpn_command(args)
+
+    def _remote_target(self) -> tuple[str, str]:
+        """Return (host, proto) for the first ``remote`` in the config."""
+        host, proto = "", "udp"
+        try:
+            text = self._config_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return host, proto
+        for raw in text.splitlines():
+            line = raw.strip()
+            low = line.lower()
+            if low.startswith("remote "):
+                parts = line.split()
+                if len(parts) >= 2 and not host:
+                    host = parts[1]
+                if len(parts) >= 4:
+                    proto = parts[3].lower()
+            elif low.startswith("proto "):
+                parts = line.split()
+                if len(parts) >= 2:
+                    proto = parts[1].lower()
+        return host, proto
+
+    def _preferred_ipv4_proto(self) -> str | None:
+        """Force IPv4 when native IPv4 can reach the server.
+
+        On dual-stack hosts whose resolver does DNS64, OpenVPN may dial the
+        server over a synthesized NAT64 IPv6 address that silently drops the
+        UDP handshake. When the server has a real A record and we have a
+        native IPv4 route to it, force IPv4 (e.g. ``udp4``) so the tunnel
+        actually comes up. Genuinely IPv6-only / NAT64-only networks have no
+        IPv4 route here, so they are left untouched.
+        """
+        host, proto = self._remote_target()
+        if not host:
+            return None
+        # Respect explicit IP literals; only hostnames suffer the DNS64 issue.
+        for family in (socket.AF_INET, socket.AF_INET6):
+            try:
+                socket.inet_pton(family, host)
+                return None
+            except OSError:
+                pass
+        try:
+            ipv4 = _resolve_ipv4(host)
+            if not ipv4 or not _ipv4_route_available(ipv4):
+                return None
+        except OSError:
+            return None
+        forced = "tcp4" if proto.startswith("tcp") else "udp4"
+        self.log_line.emit(
+            f"Native IPv4 route to {host} ({ipv4}) detected — forcing "
+            f"{forced} to avoid a broken NAT64/IPv6 path"
+        )
+        return forced
 
     def _pid_file_path(self) -> Path:
         return _runtime_dir() / f"openvpn-{os_getpid()}.pid"

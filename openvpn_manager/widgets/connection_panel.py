@@ -43,6 +43,7 @@ class ConnectionPanel(QWidget):
     disconnect_clicked = Signal()
     import_clicked = Signal()
     delete_clicked = Signal()
+    rename_clicked = Signal()
     edit_credentials_clicked = Signal()
 
     def __init__(self, parent=None) -> None:
@@ -80,6 +81,11 @@ class ConnectionPanel(QWidget):
         self._cred_btn.clicked.connect(self.edit_credentials_clicked.emit)
         self._cred_btn.setEnabled(False)
         btn_row.addWidget(self._cred_btn)
+
+        self._rename_btn = QPushButton("Rename…")
+        self._rename_btn.clicked.connect(self.rename_clicked.emit)
+        self._rename_btn.setEnabled(False)
+        btn_row.addWidget(self._rename_btn)
 
         import_btn = QPushButton("Import…")
         import_btn.clicked.connect(self.import_clicked.emit)
@@ -134,6 +140,7 @@ class ConnectionPanel(QWidget):
             )
             self._connect_btn.setEnabled(False)
             self._cred_btn.setEnabled(False)
+            self._rename_btn.setEnabled(False)
             self._delete_btn.setEnabled(False)
             return
 
@@ -144,6 +151,7 @@ class ConnectionPanel(QWidget):
         )
         self._connect_btn.setEnabled(True)
         self._cred_btn.setEnabled(profile.needs_auth)
+        self._rename_btn.setEnabled(True)
         self._delete_btn.setEnabled(not is_active)
         self._render_status(active=is_active, connected=is_connected)
 

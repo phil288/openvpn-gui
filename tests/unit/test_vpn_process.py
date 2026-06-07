@@ -90,3 +90,69 @@ def test_parse_state_not_connected_while_connecting() -> None:
 def test_parse_state_ignores_bytecount_noise() -> None:
     resp = "1700000005,CONNECTED,SUCCESS,10.8.0.2,,,,\nEND\n>BYTECOUNT:123,456\n"
     assert _worker()._parse_state(resp) == "CONNECTED"
+
+
+def _write_config(tmp_path: Path, body: str) -> Path:
+    cfg = tmp_path / "profile.ovpn"
+    cfg.write_text(body, encoding="utf-8")
+    return cfg
+
+
+def test_force_ipv4_when_native_route_available(tmp_path: Path) -> None:
+    cfg = _write_config(tmp_path, "remote vpn.example.com 1194 udp\n")
+    worker = VpnWorker(cfg, 0)
+    with patch(
+        "openvpn_manager.backend.vpn_process._resolve_ipv4",
+        return_value="31.33.155.5",
+    ), patch(
+        "openvpn_manager.backend.vpn_process._ipv4_route_available",
+        return_value=True,
+    ):
+        assert worker._preferred_ipv4_proto() == "udp4"
+
+
+def test_force_ipv4_uses_tcp_family_for_tcp(tmp_path: Path) -> None:
+    cfg = _write_config(tmp_path, "remote vpn.example.com 443\nproto tcp\n")
+    worker = VpnWorker(cfg, 0)
+    with patch(
+        "openvpn_manager.backend.vpn_process._resolve_ipv4",
+        return_value="31.33.155.5",
+    ), patch(
+        "openvpn_manager.backend.vpn_process._ipv4_route_available",
+        return_value=True,
+    ):
+        assert worker._preferred_ipv4_proto() == "tcp4"
+
+
+def test_no_force_when_no_ipv4_route(tmp_path: Path) -> None:
+    """IPv6-only / NAT64-only host: leave the working path untouched."""
+    cfg = _write_config(tmp_path, "remote vpn.example.com 1194 udp\n")
+    worker = VpnWorker(cfg, 0)
+    with patch(
+        "openvpn_manager.backend.vpn_process._resolve_ipv4",
+        return_value="31.33.155.5",
+    ), patch(
+        "openvpn_manager.backend.vpn_process._ipv4_route_available",
+        return_value=False,
+    ):
+        assert worker._preferred_ipv4_proto() is None
+
+
+def test_no_force_when_server_has_no_a_record(tmp_path: Path) -> None:
+    cfg = _write_config(tmp_path, "remote vpn.example.com 1194 udp\n")
+    worker = VpnWorker(cfg, 0)
+    with patch(
+        "openvpn_manager.backend.vpn_process._resolve_ipv4", return_value=None
+    ):
+        assert worker._preferred_ipv4_proto() is None
+
+
+def test_no_force_for_ip_literal_remote(tmp_path: Path) -> None:
+    cfg = _write_config(tmp_path, "remote 203.0.113.9 1194 udp\n")
+    worker = VpnWorker(cfg, 0)
+    # Must not even attempt resolution for a literal address.
+    with patch(
+        "openvpn_manager.backend.vpn_process._resolve_ipv4"
+    ) as resolve:
+        assert worker._preferred_ipv4_proto() is None
+        resolve.assert_not_called()

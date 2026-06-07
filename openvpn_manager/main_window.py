@@ -6,8 +6,16 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QResizeEvent
-from PySide6.QtWidgets import QHBoxLayout, QSplitter, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
 
+from openvpn_manager import __version__
 from openvpn_manager.backend import credentials as cred_store
 from openvpn_manager.backend import privilege
 from openvpn_manager.backend.profile_store import (
@@ -17,6 +25,7 @@ from openvpn_manager.backend.profile_store import (
     import_profile,
     list_profiles,
     profile_needs_auth,
+    rename_profile,
     touch_last_used,
 )
 from openvpn_manager.backend.vpn_process import ConnectionStats, VpnController
@@ -41,11 +50,11 @@ class MainWindow(OvpnDropMixin, QWidget):
         enable_styled_background(self)
         self._vpn = vpn
         self._selected_id: str | None = None
-        self.setWindowTitle("OpenVPN Manager")
+        self.setWindowTitle(f"OpenVPN Manager v{__version__}")
         self.setMinimumSize(820, 520)
         self.setAcceptDrops(True)
 
-        layout = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self._profile_list = ProfileListWidget()
@@ -60,13 +69,19 @@ class MainWindow(OvpnDropMixin, QWidget):
         self._panel.disconnect_clicked.connect(self._on_disconnect_clicked)
         self._panel.import_clicked.connect(self._import_profile)
         self._panel.delete_clicked.connect(self._delete_profile)
+        self._panel.rename_clicked.connect(self._rename_profile)
         self._panel.edit_credentials_clicked.connect(self._edit_credentials)
         splitter.addWidget(self._panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
         splitter.setSizes([280, 540])
 
-        layout.addWidget(splitter)
+        root.addWidget(splitter, 1)
+
+        self._version_label = QLabel(f"v{__version__}")
+        self._version_label.setObjectName("versionLabel")
+        self._version_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        root.addWidget(self._version_label)
 
         self._drop_overlay = DropOverlay(self)
         self._drop_overlay.files_dropped.connect(self._import_dropped_files)
@@ -270,6 +285,26 @@ class MainWindow(OvpnDropMixin, QWidget):
         if not path:
             return
         self._import_dropped_files([path], {path: dlg.display_name()})
+
+    def _rename_profile(self) -> None:
+        if not self._selected_id:
+            return
+        profile = get_profile(self._selected_id)
+        if not profile:
+            return
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Rename profile",
+            "Profile name:",
+            text=profile.name,
+        )
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name or new_name == profile.name:
+            return
+        rename_profile(self._selected_id, new_name)
+        self.refresh_profiles()
 
     def _delete_profile(self) -> None:
         if not self._selected_id:

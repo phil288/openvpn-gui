@@ -112,8 +112,21 @@ def get_profile(profile_id: str) -> Profile | None:
     return None
 
 
+def _identity_key(server: str, port: int, protocol: str) -> tuple[str, int, str] | None:
+    """Stable key identifying "the same connection". None when unmatchable."""
+    if not server:
+        return None
+    return (server.strip().lower(), int(port), protocol.strip().lower())
+
+
 def import_profile(source_path: Path, display_name: str | None = None) -> Profile:
-    """Copy .ovpn into profile store and register in index."""
+    """Import a .ovpn file.
+
+    If a profile for the same connection (server + port + protocol) already
+    exists, it is replaced in place — the config is refreshed and metadata
+    updated while the existing id, saved credentials, and history are kept —
+    instead of creating a duplicate entry.
+    """
     source_path = source_path.resolve()
     if not source_path.is_file():
         raise FileNotFoundError(f"Profile not found: {source_path}")
@@ -122,6 +135,36 @@ def import_profile(source_path: Path, display_name: str | None = None) -> Profil
 
     content = source_path.read_text(encoding="utf-8", errors="replace")
     meta = parse_ovpn_config(content)
+
+    entries = _load_index()
+    new_key = _identity_key(meta["server"], meta["port"], meta["protocol"])
+    existing = None
+    if new_key is not None:
+        for e in entries:
+            if (
+                _identity_key(e.get("server", ""), e.get("port", 0), e.get("protocol", ""))
+                == new_key
+            ):
+                existing = e
+                break
+
+    if existing is not None:
+        # Replace: reuse id + config path so credentials stay associated.
+        profile_id = existing["id"]
+        dest = Path(existing.get("config_path") or PROFILES_DIR / f"{profile_id}.ovpn")
+        shutil.copy2(source_path, dest)
+        existing.update(
+            {
+                "name": display_name or existing.get("name") or meta["name"],
+                "server": meta["server"],
+                "port": meta["port"],
+                "protocol": meta["protocol"],
+                "config_path": str(dest),
+                "needs_auth": meta["needs_auth"],
+            }
+        )
+        _save_index(entries)
+        return Profile.from_dict(existing)
 
     profile_id = str(uuid.uuid4())
     dest = PROFILES_DIR / f"{profile_id}.ovpn"
@@ -137,8 +180,6 @@ def import_profile(source_path: Path, display_name: str | None = None) -> Profil
         config_path=str(dest),
         needs_auth=meta["needs_auth"],
     )
-
-    entries = _load_index()
     entries.append(profile.to_dict())
     _save_index(entries)
     return profile

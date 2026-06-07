@@ -1,6 +1,6 @@
 [project]
 name = "openvpn-manager"
-version = "0.1.0"
+version = "0.1.2"
 description = "Desktop OpenVPN connection manager for Fedora"
 readme = "README.md"
 requires-python = ">=3.11"

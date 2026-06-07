@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/phil/dev/personal/openvpn-connect/scripts/bump_version.py",
+            "statusMessage": "Bumping app version…"
+          }
+        ]
+      }
+    ]
+  }
+}
