@@ -171,8 +171,11 @@ class ManagementClient:
         return self._read_until_prompt()
 
     def send_credentials(self, username: str, password: str) -> None:
-        self.command(f'username "Auth" {username}')
-        self.command(f'password "Auth" {password}')
+        # Strip CR/LF so a value can't inject additional management commands.
+        user = username.replace("\r", "").replace("\n", "")
+        secret = password.replace("\r", "").replace("\n", "")
+        self.command(f'username "Auth" {user}')
+        self.command(f'password "Auth" {secret}')
 
     def signal_stop(self) -> None:
         """Ask OpenVPN to exit via management interface."""
@@ -201,6 +204,7 @@ class VpnWorker(QThread):
         management_port: int,
         username: str = "",
         password: str = "",
+        allow_scripts: bool = False,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -208,6 +212,7 @@ class VpnWorker(QThread):
         self._management_port = management_port
         self._username = username
         self._password = password
+        self._allow_scripts = allow_scripts
         self._stop = False
         self._process: subprocess.Popen[str] | None = None
         self._mgmt: ManagementClient | None = None
@@ -275,7 +280,11 @@ class VpnWorker(QThread):
             os_fspath(self._pid_file_path()),
         ]
         if self._username and self._password:
-            fd, path = tempfile.mkstemp(prefix="ovpn-auth-", suffix=".txt")
+            # Place the credential file in the 0700 per-user runtime dir rather
+            # than world-traversable /tmp. mkstemp creates it 0600.
+            fd, path = tempfile.mkstemp(
+                prefix="ovpn-auth-", suffix=".txt", dir=os_fspath(_runtime_dir())
+            )
             os_close(fd)
             self._auth_file = Path(path)
             self._auth_file.write_text(
@@ -286,6 +295,12 @@ class VpnWorker(QThread):
         forced_proto = self._preferred_ipv4_proto()
         if forced_proto:
             args.extend(["--proto", forced_proto])
+        if not self._allow_scripts:
+            # Neutralize root code-execution from config-embedded scripts
+            # (up/down/tls-verify/…). Appended after --config so it overrides
+            # any higher script-security the config tries to set. Level 1 still
+            # permits OpenVPN's own built-in ifconfig/route helpers.
+            args.extend(["--script-security", "1"])
         args.extend(["--dev", "tun"])
         return wrap_openvpn_command(args)
 
@@ -563,7 +578,7 @@ class VpnController(QObject):
         super().__init__(parent)
         self._worker: VpnWorker | None = None
         self._active_profile_id: str | None = None
-        self._pending_connect: tuple[str, Path, str, str] | None = None
+        self._pending_connect: tuple[str, Path, str, str, bool] | None = None
         self._tunnel_connected = False
 
     @property
@@ -586,12 +601,19 @@ class VpnController(QObject):
         config_path: Path,
         username: str = "",
         password: str = "",
+        allow_scripts: bool = False,
     ) -> None:
         if self._worker and self._worker.isRunning():
-            self._pending_connect = (profile_id, config_path, username, password)
+            self._pending_connect = (
+                profile_id,
+                config_path,
+                username,
+                password,
+                allow_scripts,
+            )
             self.disconnect()
             return
-        self._start_worker(profile_id, config_path, username, password)
+        self._start_worker(profile_id, config_path, username, password, allow_scripts)
 
     def _start_worker(
         self,
@@ -599,10 +621,13 @@ class VpnController(QObject):
         config_path: Path,
         username: str,
         password: str,
+        allow_scripts: bool = False,
     ) -> None:
         self._active_profile_id = profile_id
         self._tunnel_connected = False
-        self._worker = VpnWorker(config_path, 0, username, password)
+        self._worker = VpnWorker(
+            config_path, 0, username, password, allow_scripts=allow_scripts
+        )
         self._worker.status_changed.connect(self._on_worker_status)
         self._worker.stats_updated.connect(self.stats_updated.emit)
         self._worker.log_line.connect(self.log_line.emit)
@@ -647,5 +672,7 @@ class VpnController(QObject):
         self._clear_worker()
         self.disconnected.emit()
         if pending:
-            profile_id, config_path, username, password = pending
-            self._start_worker(profile_id, config_path, username, password)
+            profile_id, config_path, username, password, allow_scripts = pending
+            self._start_worker(
+                profile_id, config_path, username, password, allow_scripts
+            )

@@ -48,6 +48,20 @@ def test_build_command_without_credentials(runtime_dir: Path) -> None:
     assert cmd[cmd.index("--management") + 1] == str(sock)
 
 
+def test_build_command_forces_script_security_by_default(runtime_dir: Path) -> None:
+    """Untrusted configs must not be able to run scripts as root."""
+    worker = VpnWorker(Path("/tmp/profile.ovpn"), 0)
+    cmd = worker._build_command(runtime_dir / "mgmt.sock")
+    assert "--script-security" in cmd
+    assert cmd[cmd.index("--script-security") + 1] == "1"
+
+
+def test_build_command_allows_scripts_when_consented(runtime_dir: Path) -> None:
+    worker = VpnWorker(Path("/tmp/profile.ovpn"), 0, allow_scripts=True)
+    cmd = worker._build_command(runtime_dir / "mgmt.sock")
+    assert "--script-security" not in cmd
+
+
 def test_runtime_dir_uses_override(runtime_dir: Path, monkeypatch) -> None:
     monkeypatch.setenv("OPENVPN_MANAGER_RUNTIME_DIR", str(runtime_dir / "rt"))
     assert _runtime_dir() == runtime_dir / "rt"

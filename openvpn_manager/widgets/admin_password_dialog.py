@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QLabel,
@@ -21,13 +20,15 @@ class AdminPasswordDialog(QDialog):
         self.setMinimumWidth(400)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(
-            QLabel(
-                "OpenVPN needs permission to create the VPN tunnel.\n"
-                "Enter your <b>login password</b>; it can be remembered "
-                "securely so you are not asked on every connect."
-            )
+        label = QLabel(
+            "OpenVPN needs permission to create the VPN tunnel.\n"
+            "Enter your <b>login password</b>. It is used only to authorize "
+            "sudo for this session and is never stored.\n"
+            "For passwordless connects, install the PolicyKit policy "
+            "(./install.sh --polkit)."
         )
+        label.setWordWrap(True)
+        layout.addWidget(label)
 
         self._error = QLabel()
         self._error.setObjectName("adminPasswordError")
@@ -42,10 +43,6 @@ class AdminPasswordDialog(QDialog):
         self._password.setPlaceholderText("Login password")
         layout.addWidget(self._password)
 
-        self._remember = QCheckBox("Remember in system keyring")
-        self._remember.setChecked(True)
-        layout.addWidget(self._remember)
-
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
@@ -56,9 +53,6 @@ class AdminPasswordDialog(QDialog):
 
     def password(self) -> str:
         return self._password.text()
-
-    def remember(self) -> bool:
-        return self._remember.isChecked()
 
     def set_error(self, message: str) -> None:
         self._error.setText(message)

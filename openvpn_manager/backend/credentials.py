@@ -44,20 +44,13 @@ def has_credentials(profile_id: str) -> bool:
     return load_credentials(profile_id) is not None
 
 
-def save_admin_password(password: str) -> None:
-    """Store the user's login password for sudo caching (system keyring)."""
-    keyring.set_password(SERVICE_NAME, ADMIN_PASSWORD_KEY, password)
-
-
-def load_admin_password() -> str | None:
-    return keyring.get_password(SERVICE_NAME, ADMIN_PASSWORD_KEY)
-
-
-def has_admin_password() -> bool:
-    return load_admin_password() is not None
-
-
 def delete_admin_password() -> None:
+    """Remove any legacy stored login/sudo password.
+
+    The app deliberately no longer persists the user's login password (it is a
+    reusable account secret that any same-user process could read back from the
+    keyring). This remains only to purge secrets written by older versions.
+    """
     try:
         keyring.delete_password(SERVICE_NAME, ADMIN_PASSWORD_KEY)
     except keyring.errors.PasswordDeleteError:

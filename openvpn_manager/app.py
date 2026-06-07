@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
 )
 
 from openvpn_manager.backend import credentials as cred_store
-from openvpn_manager.backend import privilege
 from openvpn_manager.backend.profile_store import list_profiles
 from openvpn_manager.backend.vpn_process import VpnController
 from openvpn_manager.main_window import MainWindow
@@ -192,7 +191,7 @@ class OpenVpnManagerApp(QApplication):
             self, self._window, self._vpn, on_exit=self.shutdown
         )
         self._pending_ovpn = ovpn_paths_from_argv(argv)
-        QTimer.singleShot(0, self._warm_sudo_cache)
+        QTimer.singleShot(0, self._purge_legacy_admin_password)
 
         def _on_connected_notify() -> None:
             if self._tray and self._tray._tray:
@@ -205,13 +204,13 @@ class OpenVpnManagerApp(QApplication):
         if self._tray:
             self._tray.refresh()
 
-    def _warm_sudo_cache(self) -> None:
-        """Restore sudo timestamp from keyring on startup when possible."""
-        if not privilege.needs_elevation():
-            return
-        stored = cred_store.load_admin_password()
-        if stored and not privilege.cache_sudo_password(stored):
-            cred_store.delete_admin_password()
+    def _purge_legacy_admin_password(self) -> None:
+        """Delete any login/sudo password stored by older versions.
+
+        The app no longer persists the login password (a reusable account
+        secret); this one-time cleanup removes it from the keyring on upgrade.
+        """
+        cred_store.delete_admin_password()
 
     def shutdown(self) -> None:
         """Clean exit: disconnect VPN, release tray, stop event loop."""

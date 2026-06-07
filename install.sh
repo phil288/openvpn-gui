@@ -193,4 +193,5 @@ if [[ "$INSTALL_DESKTOP" == "1" ]]; then
     echo ""
 fi
 echo "  Uninstall desktop entry: rm ~/.local/share/applications/openvpn-manager.desktop"
-echo "  VPN connects use sudo with a cached login password (stored in your system keyring if you choose Remember)."
+echo "  VPN connects use sudo; your login password authorizes the session sudo"
+echo "  timestamp and is never stored. For passwordless connects: ./install.sh --polkit"

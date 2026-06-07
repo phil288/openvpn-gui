@@ -27,6 +27,7 @@ class Profile:
     protocol: str
     config_path: str
     needs_auth: bool = False
+    allow_scripts: bool = False
     last_used: str | None = None
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -38,6 +39,49 @@ class Profile:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+# OpenVPN config directives that cause command, script, or shared-object
+# execution. Because the tunnel runs as root, any of these in an untrusted
+# profile is a root code-execution vector and must require explicit consent.
+RISKY_DIRECTIVES = frozenset(
+    {
+        "up",
+        "down",
+        "route-up",
+        "route-pre-down",
+        "ipchange",
+        "tls-verify",
+        "tls-crypt-v2-verify",
+        "auth-user-pass-verify",
+        "client-connect",
+        "client-disconnect",
+        "learn-address",
+        "plugin",
+        "script-security",
+    }
+)
+
+
+class RiskyConfigError(ValueError):
+    """Raised when a profile contains root-executing directives without consent."""
+
+    def __init__(self, risks: list[tuple[str, str]]) -> None:
+        self.risks = risks
+        super().__init__("Config contains directives that execute as root")
+
+
+def scan_config_risks(content: str) -> list[tuple[str, str]]:
+    """Return (directive, full line) for each risky directive in the config."""
+    found: list[tuple[str, str]] = []
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        token = line.split(None, 1)[0].lstrip("-").lower()
+        if token in RISKY_DIRECTIVES:
+            found.append((token, line))
+    return found
 
 
 def _ensure_dirs() -> None:
@@ -119,13 +163,23 @@ def _identity_key(server: str, port: int, protocol: str) -> tuple[str, int, str]
     return (server.strip().lower(), int(port), protocol.strip().lower())
 
 
-def import_profile(source_path: Path, display_name: str | None = None) -> Profile:
+def import_profile(
+    source_path: Path,
+    display_name: str | None = None,
+    allow_risky: bool = False,
+) -> Profile:
     """Import a .ovpn file.
 
     If a profile for the same connection (server + port + protocol) already
     exists, it is replaced in place — the config is refreshed and metadata
     updated while the existing id, saved credentials, and history are kept —
     instead of creating a duplicate entry.
+
+    Because the tunnel runs as root, configs containing directives that execute
+    commands/scripts/plugins as root (see ``RISKY_DIRECTIVES``) raise
+    ``RiskyConfigError`` unless ``allow_risky`` is set — the caller must obtain
+    explicit user consent first. A consented risky import is recorded on the
+    profile as ``allow_scripts`` so the tunnel is allowed to run those scripts.
     """
     source_path = source_path.resolve()
     if not source_path.is_file():
@@ -134,6 +188,10 @@ def import_profile(source_path: Path, display_name: str | None = None) -> Profil
         raise ValueError("Only .ovpn files are supported")
 
     content = source_path.read_text(encoding="utf-8", errors="replace")
+    risks = scan_config_risks(content)
+    if risks and not allow_risky:
+        raise RiskyConfigError(risks)
+    allow_scripts = bool(risks)  # consented script execution for this profile
     meta = parse_ovpn_config(content)
 
     entries = _load_index()
@@ -161,6 +219,7 @@ def import_profile(source_path: Path, display_name: str | None = None) -> Profil
                 "protocol": meta["protocol"],
                 "config_path": str(dest),
                 "needs_auth": meta["needs_auth"],
+                "allow_scripts": allow_scripts,
             }
         )
         _save_index(entries)
@@ -179,6 +238,7 @@ def import_profile(source_path: Path, display_name: str | None = None) -> Profil
         protocol=meta["protocol"],
         config_path=str(dest),
         needs_auth=meta["needs_auth"],
+        allow_scripts=allow_scripts,
     )
     entries.append(profile.to_dict())
     _save_index(entries)

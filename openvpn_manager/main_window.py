@@ -26,6 +26,7 @@ from openvpn_manager.backend.profile_store import (
     list_profiles,
     profile_needs_auth,
     rename_profile,
+    RiskyConfigError,
     touch_last_used,
 )
 from openvpn_manager.backend.vpn_process import ConnectionStats, VpnController
@@ -130,17 +131,16 @@ class MainWindow(OvpnDropMixin, QWidget):
         self._vpn.disconnect()
 
     def _ensure_elevation(self) -> bool:
-        """Cache sudo credentials when needed (keyring + sudo timestamp)."""
+        """Authorize sudo when needed via its time-limited timestamp.
+
+        The login password is only used to validate the sudo timestamp for this
+        session and is never persisted. (Install the PolicyKit policy for a
+        passwordless flow.)
+        """
         if not privilege.needs_elevation():
             return True
         if privilege.sudo_ticket_valid():
             return True
-
-        stored = cred_store.load_admin_password()
-        if stored and privilege.cache_sudo_password(stored):
-            return True
-        if stored:
-            cred_store.delete_admin_password()
 
         error = ""
         dlg = AdminPasswordDialog(self, error_message=error)
@@ -150,13 +150,8 @@ class MainWindow(OvpnDropMixin, QWidget):
             if dlg.exec() != AdminPasswordDialog.DialogCode.Accepted:
                 return False
             if privilege.cache_sudo_password(dlg.password()):
-                if dlg.remember():
-                    cred_store.save_admin_password(dlg.password())
-                else:
-                    cred_store.delete_admin_password()
                 return True
             error = "Incorrect password. Please try again."
-            cred_store.delete_admin_password()
 
     def _connect_profile(self, profile_id: str) -> None:
         profile = get_profile(profile_id)
@@ -189,6 +184,7 @@ class MainWindow(OvpnDropMixin, QWidget):
             Path(profile.config_path),
             username,
             password,
+            allow_scripts=profile.allow_scripts,
         )
         self._selected_id = profile_id
         touch_last_used(profile_id)
@@ -230,6 +226,30 @@ class MainWindow(OvpnDropMixin, QWidget):
             self.activateWindow()
             self._import_dropped_files(ovpn)
 
+    def _import_one(self, path: Path, name: str | None) -> Profile | None:
+        """Import a single profile, prompting for consent on risky configs.
+
+        Returns the imported Profile, or None if the user declined a profile
+        that would execute commands as root.
+        """
+        try:
+            return import_profile(path, name)
+        except RiskyConfigError as risk:
+            lines = "\n".join(f"    {line}" for _, line in risk.risks[:8])
+            more = "\n    …" if len(risk.risks) > 8 else ""
+            if not question_yes_no(
+                self,
+                "Profile runs commands as root",
+                f"“{path.name}” contains OpenVPN directives that execute "
+                "commands, scripts, or plugins as root when you connect:\n\n"
+                f"{lines}{more}\n\n"
+                "Only import profiles from sources you fully trust. "
+                "Import and allow these to run?",
+                default_no=True,
+            ):
+                return None
+            return import_profile(path, name, allow_risky=True)
+
     def _import_dropped_files(
         self,
         paths: list[Path],
@@ -242,13 +262,15 @@ class MainWindow(OvpnDropMixin, QWidget):
 
         for path in paths:
             try:
-                profile = import_profile(path, names.get(path))
-                imported.append(profile)
+                profile = self._import_one(path, names.get(path))
+                if profile is not None:
+                    imported.append(profile)
             except (OSError, ValueError) as e:
                 errors.append(f"{path.name}: {e}")
 
-        if not imported and errors:
-            critical(self, "Import failed", "\n".join(errors))
+        if not imported:
+            if errors:
+                critical(self, "Import failed", "\n".join(errors))
             return
 
         self.refresh_profiles()

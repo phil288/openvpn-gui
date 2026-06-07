@@ -81,3 +81,50 @@ def test_different_server_creates_new_profile(
     profile_store.import_profile(a)
     profile_store.import_profile(b)
     assert len(profile_store.list_profiles()) == 2
+
+
+def test_scan_config_risks_detects_dangerous_directives() -> None:
+    content = (
+        "remote vpn.test 1194 udp\n"
+        "script-security 2\n"
+        "up '/bin/sh -c id'\n"
+        "# down commented-out should be ignored\n"
+        "plugin /tmp/evil.so\n"
+    )
+    risks = profile_store.scan_config_risks(content)
+    directives = {d for d, _ in risks}
+    assert directives == {"script-security", "up", "plugin"}
+
+
+def test_import_blocks_risky_config_without_consent(
+    isolated_store: Path, tmp_path: Path
+) -> None:
+    ovpn = tmp_path / "evil.ovpn"
+    ovpn.write_text(
+        "remote vpn.test 1194 udp\nscript-security 2\nup /tmp/x.sh\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(profile_store.RiskyConfigError) as exc:
+        profile_store.import_profile(ovpn)
+    assert exc.value.risks  # carries the offending directives
+    assert profile_store.list_profiles() == []  # nothing imported
+
+
+def test_import_allows_risky_with_consent_sets_allow_scripts(
+    isolated_store: Path, tmp_path: Path
+) -> None:
+    ovpn = tmp_path / "evil.ovpn"
+    ovpn.write_text(
+        "remote vpn.test 1194 udp\nup /tmp/x.sh\n", encoding="utf-8"
+    )
+    profile = profile_store.import_profile(ovpn, allow_risky=True)
+    assert profile.allow_scripts is True
+
+
+def test_import_clean_config_has_scripts_disabled(
+    isolated_store: Path, tmp_path: Path
+) -> None:
+    ovpn = tmp_path / "clean.ovpn"
+    ovpn.write_text("remote vpn.test 1194 udp\nauth-user-pass\n", encoding="utf-8")
+    profile = profile_store.import_profile(ovpn)
+    assert profile.allow_scripts is False

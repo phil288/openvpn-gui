@@ -125,6 +125,9 @@ class SingleInstanceServer:
     def __init__(self, on_files) -> None:
         self._on_files = on_files
         self._server = QLocalServer()
+        # Restrict the IPC socket to the current user so other local accounts
+        # cannot push .ovpn import requests to this process.
+        self._server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
         self._server.newConnection.connect(self._on_new_connection)
         QLocalServer.removeServer(_server_name())
         if not self._server.listen(_server_name()):
