@@ -3,6 +3,8 @@ name = "openvpn-manager"
 version = "0.1.2"
 description = "Desktop OpenVPN connection manager for Fedora"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "PySide6>=6.6",
@@ -19,7 +21,7 @@ test = [
 openvpn-manager = "openvpn_manager.app:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
