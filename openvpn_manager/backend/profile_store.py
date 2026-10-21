@@ -28,6 +28,9 @@ class Profile:
     config_path: str
     needs_auth: bool = False
     allow_scripts: bool = False
+    # Off = split tunnel: server-pushed default routes are ignored so only the
+    # VPN's own networks go through the tunnel.
+    route_all_traffic: bool = False
     last_used: str | None = None
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -268,6 +271,17 @@ def rename_profile(profile_id: str, new_name: str) -> Profile | None:
     for e in entries:
         if e.get("id") == profile_id:
             e["name"] = new_name.strip() or e["name"]
+            _save_index(entries)
+            return Profile.from_dict(e)
+    return None
+
+
+def set_route_all_traffic(profile_id: str, enabled: bool) -> Profile | None:
+    """Choose whether the profile sends all traffic through the tunnel."""
+    entries = _load_index()
+    for e in entries:
+        if e.get("id") == profile_id:
+            e["route_all_traffic"] = bool(enabled)
             _save_index(entries)
             return Profile.from_dict(e)
     return None

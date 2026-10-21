@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -45,6 +46,7 @@ class ConnectionPanel(QWidget):
     delete_clicked = Signal()
     rename_clicked = Signal()
     edit_credentials_clicked = Signal()
+    route_all_toggled = Signal(bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -98,6 +100,17 @@ class ConnectionPanel(QWidget):
         btn_row.addWidget(delete_btn)
         layout.addLayout(btn_row)
 
+        self._route_all = QCheckBox("Route all internet traffic through the VPN")
+        self._route_all.setToolTip(
+            "Off: only the VPN's own networks use the tunnel and the rest of "
+            "your traffic stays on your local connection. On: honour the "
+            "server's default route — internet breaks if the server does not "
+            "forward it. Applies on the next connect."
+        )
+        self._route_all.setEnabled(False)
+        self._route_all.toggled.connect(self.route_all_toggled.emit)
+        layout.addWidget(self._route_all)
+
         stats_box = QGroupBox("Connection")
         stats_form = QFormLayout(stats_box)
         self._vpn_ip = QLabel("—")
@@ -142,6 +155,7 @@ class ConnectionPanel(QWidget):
             self._cred_btn.setEnabled(False)
             self._rename_btn.setEnabled(False)
             self._delete_btn.setEnabled(False)
+            self._set_route_all(False, enabled=False)
             return
 
         self._title.setText(profile.name)
@@ -153,7 +167,15 @@ class ConnectionPanel(QWidget):
         self._cred_btn.setEnabled(profile.needs_auth)
         self._rename_btn.setEnabled(True)
         self._delete_btn.setEnabled(not is_active)
+        # Routing is fixed for a running session; change it while idle.
+        self._set_route_all(profile.route_all_traffic, enabled=not is_active)
         self._render_status(active=is_active, connected=is_connected)
+
+    def _set_route_all(self, checked: bool, enabled: bool) -> None:
+        self._route_all.blockSignals(True)
+        self._route_all.setChecked(checked)
+        self._route_all.blockSignals(False)
+        self._route_all.setEnabled(enabled)
 
     def _render_status(
         self, active: bool, connected: bool, label: str | None = None

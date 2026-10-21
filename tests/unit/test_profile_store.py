@@ -128,3 +128,24 @@ def test_import_clean_config_has_scripts_disabled(
     ovpn.write_text("remote vpn.test 1194 udp\nauth-user-pass\n", encoding="utf-8")
     profile = profile_store.import_profile(ovpn)
     assert profile.allow_scripts is False
+
+
+def test_route_all_traffic_defaults_off_and_persists(
+    isolated_store: Path, tmp_path: Path
+) -> None:
+    ovpn = tmp_path / "test.ovpn"
+    ovpn.write_text("remote my.vpn.test 1194 udp\n", encoding="utf-8")
+    profile = profile_store.import_profile(ovpn)
+    assert profile.route_all_traffic is False
+
+    updated = profile_store.set_route_all_traffic(profile.id, True)
+    assert updated is not None and updated.route_all_traffic is True
+    assert profile_store.get_profile(profile.id).route_all_traffic is True
+
+    # Re-importing the same connection keeps the user's routing choice.
+    reimported = profile_store.import_profile(ovpn)
+    assert reimported.route_all_traffic is True
+
+
+def test_set_route_all_traffic_unknown_profile(isolated_store: Path) -> None:
+    assert profile_store.set_route_all_traffic("missing", True) is None

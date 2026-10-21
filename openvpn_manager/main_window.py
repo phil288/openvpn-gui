@@ -27,6 +27,7 @@ from openvpn_manager.backend.profile_store import (
     profile_needs_auth,
     rename_profile,
     RiskyConfigError,
+    set_route_all_traffic,
     touch_last_used,
 )
 from openvpn_manager.backend.vpn_process import ConnectionStats, VpnController
@@ -72,6 +73,7 @@ class MainWindow(OvpnDropMixin, QWidget):
         self._panel.delete_clicked.connect(self._delete_profile)
         self._panel.rename_clicked.connect(self._rename_profile)
         self._panel.edit_credentials_clicked.connect(self._edit_credentials)
+        self._panel.route_all_toggled.connect(self._on_route_all_toggled)
         splitter.addWidget(self._panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
@@ -185,6 +187,7 @@ class MainWindow(OvpnDropMixin, QWidget):
             username,
             password,
             allow_scripts=profile.allow_scripts,
+            route_all_traffic=profile.route_all_traffic,
         )
         self._selected_id = profile_id
         touch_last_used(profile_id)
@@ -349,6 +352,10 @@ class MainWindow(OvpnDropMixin, QWidget):
             delete_profile(self._selected_id)
             self._selected_id = None
             self.refresh_profiles()
+
+    def _on_route_all_toggled(self, enabled: bool) -> None:
+        if self._selected_id:
+            set_route_all_traffic(self._selected_id, enabled)
 
     def _edit_credentials(self) -> None:
         if self._selected_id:
