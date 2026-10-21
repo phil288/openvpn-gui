@@ -315,3 +315,29 @@ def test_handshake_not_stalled_once_peer_connected() -> None:
     _feed(m, "[server] Peer Connection Initiated with [AF_INET]203.0.113.5:1196")
     assert m.phase == HandshakeMonitor.DONE
     assert not m.stalled(1000.0)
+
+
+def _pull_filters(cmd: list[str]) -> list[str]:
+    return [
+        cmd[i + 2]
+        for i, arg in enumerate(cmd)
+        if arg == "--pull-filter" and cmd[i + 1] == "ignore"
+    ]
+
+
+def test_build_command_split_tunnel_by_default(runtime_dir: Path) -> None:
+    """Server-pushed default routes must not hijack the host's internet."""
+    worker = VpnWorker(Path("/tmp/profile.ovpn"), 0)
+    cmd = worker._build_command(runtime_dir / "mgmt.sock")
+    filters = _pull_filters(cmd)
+    assert "redirect-gateway" in filters
+    assert "route 0.0.0.0 0.0.0.0" in filters
+    assert "route-ipv6 2000::/3" in filters
+    # Must come after --config so it applies to what the server pushes.
+    assert cmd.index("--pull-filter") > cmd.index("--config")
+
+
+def test_build_command_full_tunnel_when_opted_in(runtime_dir: Path) -> None:
+    worker = VpnWorker(Path("/tmp/profile.ovpn"), 0, route_all_traffic=True)
+    cmd = worker._build_command(runtime_dir / "mgmt.sock")
+    assert "--pull-filter" not in cmd

@@ -33,6 +33,22 @@ POLL_INTERVAL_SEC = 2.0
 CONNECT_TIMEOUT_SEC = 120.0
 HANDSHAKE_STALL_SEC = 10.0
 
+# Server-pushed options that send *all* traffic into the tunnel. Filtered out
+# unless the profile opts into full tunnelling, so a server that pushes a
+# default route (but doesn't NAT/forward it) can't cut the host off the
+# internet. pull-filter matches by prefix, so each entry covers its variants.
+FULL_TUNNEL_PUSH_OPTIONS = (
+    "redirect-gateway",
+    "block-ipv6",
+    "route 0.0.0.0 0.0.0.0",
+    "route 0.0.0.0 128.0.0.0",
+    "route 128.0.0.0 128.0.0.0",
+    "route-ipv6 ::/0",
+    "route-ipv6 ::/1",
+    "route-ipv6 8000::/1",
+    "route-ipv6 2000::/3",
+)
+
 
 def _runtime_dir() -> Path:
     override = os_environ.get("OPENVPN_MANAGER_RUNTIME_DIR")
@@ -293,6 +309,7 @@ class VpnWorker(QThread):
         username: str = "",
         password: str = "",
         allow_scripts: bool = False,
+        route_all_traffic: bool = False,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -301,6 +318,7 @@ class VpnWorker(QThread):
         self._username = username
         self._password = password
         self._allow_scripts = allow_scripts
+        self._route_all_traffic = route_all_traffic
         self._stop = False
         self._process: subprocess.Popen[str] | None = None
         self._mgmt: ManagementClient | None = None
@@ -390,6 +408,15 @@ class VpnWorker(QThread):
             # any higher script-security the config tries to set. Level 1 still
             # permits OpenVPN's own built-in ifconfig/route helpers.
             args.extend(["--script-security", "1"])
+        if not self._route_all_traffic:
+            # Split tunnel: keep the host's own default route and only reach
+            # the networks the server pushes explicit routes for.
+            self.log_line.emit(
+                "Split tunnel: ignoring server-pushed default routes — "
+                "internet traffic stays on the local connection"
+            )
+            for option in FULL_TUNNEL_PUSH_OPTIONS:
+                args.extend(["--pull-filter", "ignore", option])
         args.extend(["--dev", "tun"])
         return wrap_openvpn_command(args)
 
@@ -693,7 +720,7 @@ class VpnController(QObject):
         super().__init__(parent)
         self._worker: VpnWorker | None = None
         self._active_profile_id: str | None = None
-        self._pending_connect: tuple[str, Path, str, str, bool] | None = None
+        self._pending_connect: tuple[str, Path, str, str, bool, bool] | None = None
         self._tunnel_connected = False
 
     @property
@@ -717,6 +744,7 @@ class VpnController(QObject):
         username: str = "",
         password: str = "",
         allow_scripts: bool = False,
+        route_all_traffic: bool = False,
     ) -> None:
         if self._worker and self._worker.isRunning():
             self._pending_connect = (
@@ -725,10 +753,18 @@ class VpnController(QObject):
                 username,
                 password,
                 allow_scripts,
+                route_all_traffic,
             )
             self.disconnect()
             return
-        self._start_worker(profile_id, config_path, username, password, allow_scripts)
+        self._start_worker(
+            profile_id,
+            config_path,
+            username,
+            password,
+            allow_scripts,
+            route_all_traffic,
+        )
 
     def _start_worker(
         self,
@@ -737,11 +773,17 @@ class VpnController(QObject):
         username: str,
         password: str,
         allow_scripts: bool = False,
+        route_all_traffic: bool = False,
     ) -> None:
         self._active_profile_id = profile_id
         self._tunnel_connected = False
         self._worker = VpnWorker(
-            config_path, 0, username, password, allow_scripts=allow_scripts
+            config_path,
+            0,
+            username,
+            password,
+            allow_scripts=allow_scripts,
+            route_all_traffic=route_all_traffic,
         )
         self._worker.status_changed.connect(self._on_worker_status)
         self._worker.stats_updated.connect(self.stats_updated.emit)
@@ -787,7 +829,4 @@ class VpnController(QObject):
         self._clear_worker()
         self.disconnected.emit()
         if pending:
-            profile_id, config_path, username, password, allow_scripts = pending
-            self._start_worker(
-                profile_id, config_path, username, password, allow_scripts
-            )
+            self._start_worker(*pending)

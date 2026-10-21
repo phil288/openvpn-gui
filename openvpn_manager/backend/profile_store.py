@@ -32,6 +32,9 @@ class Profile:
     # Original .ovpn the stored copy was imported from ("" for profiles
     # imported before this was tracked).
     source_path: str = ""
+    # Off = split tunnel: server-pushed default routes are ignored so only the
+    # VPN's own networks go through the tunnel.
+    route_all_traffic: bool = False
     last_used: str | None = None
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -329,6 +332,17 @@ def export_profile(profile_id: str, dest: Path) -> Path:
         os.fchmod(f.fileno(), 0o600)  # also tighten a pre-existing file
         f.write(data)
     return dest
+
+
+def set_route_all_traffic(profile_id: str, enabled: bool) -> Profile | None:
+    """Choose whether the profile sends all traffic through the tunnel."""
+    entries = _load_index()
+    for e in entries:
+        if e.get("id") == profile_id:
+            e["route_all_traffic"] = bool(enabled)
+            _save_index(entries)
+            return Profile.from_dict(e)
+    return None
 
 
 def touch_last_used(profile_id: str) -> None:
