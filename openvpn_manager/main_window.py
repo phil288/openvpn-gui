@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QResizeEvent
 from PySide6.QtWidgets import (
+    QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -21,12 +22,14 @@ from openvpn_manager.backend import privilege
 from openvpn_manager.backend.profile_store import (
     Profile,
     delete_profile,
+    export_profile,
     get_profile,
     import_profile,
     list_profiles,
     profile_needs_auth,
     rename_profile,
     RiskyConfigError,
+    suggested_export_filename,
     touch_last_used,
 )
 from openvpn_manager.backend.vpn_process import ConnectionStats, VpnController
@@ -71,6 +74,7 @@ class MainWindow(OvpnDropMixin, QWidget):
         self._panel.import_clicked.connect(self._import_profile)
         self._panel.delete_clicked.connect(self._delete_profile)
         self._panel.rename_clicked.connect(self._rename_profile)
+        self._panel.export_clicked.connect(self._export_profile)
         self._panel.edit_credentials_clicked.connect(self._edit_credentials)
         splitter.addWidget(self._panel)
         splitter.setStretchFactor(0, 1)
@@ -327,6 +331,27 @@ class MainWindow(OvpnDropMixin, QWidget):
             return
         rename_profile(self._selected_id, new_name)
         self.refresh_profiles()
+
+    def _export_profile(self) -> None:
+        if not self._selected_id:
+            return
+        profile = get_profile(self._selected_id)
+        if not profile:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export connection settings",
+            str(Path.home() / suggested_export_filename(profile)),
+            "OpenVPN profiles (*.ovpn)",
+        )
+        if not path:
+            return
+        try:
+            dest = export_profile(profile.id, Path(path))
+        except (OSError, KeyError) as e:
+            critical(self, "Export failed", str(e))
+            return
+        self._panel.append_log(f"Exported {profile.name} to {dest}")
 
     def _delete_profile(self) -> None:
         if not self._selected_id:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import uuid
@@ -103,6 +104,11 @@ def _save_index(entries: list[dict[str, Any]]) -> None:
         json.dump(entries, f, indent=2)
 
 
+# Comment header carrying the display name, so an exported profile keeps its
+# name when imported elsewhere.
+_NAME_HEADER = "# ovpn-profile:"
+
+
 def parse_ovpn_config(content: str) -> dict[str, Any]:
     """Extract display metadata from .ovpn content."""
     name = "OpenVPN Profile"
@@ -113,9 +119,14 @@ def parse_ovpn_config(content: str) -> dict[str, Any]:
 
     for line in content.splitlines():
         line = line.strip()
+        lower = line.lower()
+        # Name header written by export_profile(); checked before the comment
+        # skip below because it is itself a comment line.
+        if lower.startswith(_NAME_HEADER):
+            name = line.split(":", 1)[1].strip() or name
+            continue
         if not line or line.startswith("#") or line.startswith(";"):
             continue
-        lower = line.lower()
         if lower.startswith("remote "):
             parts = line.split()
             if len(parts) >= 2:
@@ -129,8 +140,6 @@ def parse_ovpn_config(content: str) -> dict[str, Any]:
                 protocol = parts[3].lower()
         elif lower.startswith("auth-user-pass"):
             needs_auth = True
-        elif lower.startswith("# ovpn-profile:"):
-            name = line.split(":", 1)[1].strip() or name
 
     if server and name == "OpenVPN Profile":
         name = server
@@ -271,6 +280,50 @@ def rename_profile(profile_id: str, new_name: str) -> Profile | None:
             _save_index(entries)
             return Profile.from_dict(e)
     return None
+
+
+def suggested_export_filename(profile: Profile) -> str:
+    """Filesystem-safe ``<name>.ovpn`` for the export save dialog."""
+    stem = re.sub(r"[^\w.-]+", "_", profile.name).strip("._")
+    return f"{stem or 'profile'}.ovpn"
+
+
+def export_profile(profile_id: str, dest: Path) -> Path:
+    """Write a profile's connection settings to ``dest`` as a .ovpn file.
+
+    The stored config is written verbatim with a ``# ovpn-profile: <name>``
+    header prepended (replacing any existing one) so re-importing it restores
+    the display name. A ``.ovpn`` suffix is added when missing.
+
+    Saved VPN credentials live in the keyring and are never exported. The
+    config itself may embed private keys (``<key>``, ``<tls-auth>`` …), so the
+    file is created owner-only (0600).
+    """
+    profile = get_profile(profile_id)
+    if profile is None:
+        raise KeyError(f"Unknown profile: {profile_id}")
+    source = Path(profile.config_path)
+    if not source.is_file():
+        raise FileNotFoundError(f"Profile config missing: {source}")
+
+    dest = Path(dest)
+    if dest.suffix.lower() != ".ovpn":
+        dest = dest.with_name(dest.name + ".ovpn")
+
+    content = source.read_text(encoding="utf-8", errors="replace")
+    body = "".join(
+        line
+        for line in content.splitlines(keepends=True)
+        if not line.strip().lower().startswith(_NAME_HEADER)
+    )
+    name = " ".join(profile.name.split())
+    data = f"{_NAME_HEADER} {name}\n{body}"
+
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        os.fchmod(f.fileno(), 0o600)  # also tighten a pre-existing file
+        f.write(data)
+    return dest
 
 
 def touch_last_used(profile_id: str) -> None:

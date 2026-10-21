@@ -128,3 +128,75 @@ def test_import_clean_config_has_scripts_disabled(
     ovpn.write_text("remote vpn.test 1194 udp\nauth-user-pass\n", encoding="utf-8")
     profile = profile_store.import_profile(ovpn)
     assert profile.allow_scripts is False
+
+
+def test_parse_reads_name_header() -> None:
+    content = "# ovpn-profile: Office VPN\nremote vpn.example.com 1194 udp\n"
+    assert profile_store.parse_ovpn_config(content)["name"] == "Office VPN"
+
+
+def test_export_profile_writes_config_with_name_header(
+    isolated_store: Path, tmp_path: Path
+) -> None:
+    ovpn = tmp_path / "src.ovpn"
+    ovpn.write_text(
+        "# ovpn-profile: Old Name\nremote my.vpn.test 443 tcp\nauth-user-pass\n",
+        encoding="utf-8",
+    )
+    profile = profile_store.import_profile(ovpn, "My VPN")
+
+    dest = profile_store.export_profile(profile.id, tmp_path / "export")
+
+    assert dest.name == "export.ovpn"  # suffix added
+    text = dest.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    assert lines[0] == "# ovpn-profile: My VPN"
+    assert "Old Name" not in text  # stale header replaced, not duplicated
+    assert "remote my.vpn.test 443 tcp" in lines
+    assert dest.stat().st_mode & 0o777 == 0o600  # may hold private keys
+
+
+def test_export_tightens_existing_file_permissions(
+    isolated_store: Path, tmp_path: Path
+) -> None:
+    ovpn = tmp_path / "src.ovpn"
+    ovpn.write_text("remote my.vpn.test 1194 udp\n", encoding="utf-8")
+    profile = profile_store.import_profile(ovpn)
+    dest = tmp_path / "existing.ovpn"
+    dest.write_text("old", encoding="utf-8")
+    dest.chmod(0o644)
+
+    profile_store.export_profile(profile.id, dest)
+
+    assert dest.stat().st_mode & 0o777 == 0o600
+    assert "old" not in dest.read_text(encoding="utf-8")
+
+
+def test_export_roundtrip_restores_name(
+    isolated_store: Path, tmp_path: Path
+) -> None:
+    ovpn = tmp_path / "src.ovpn"
+    ovpn.write_text("remote my.vpn.test 1194 udp\n", encoding="utf-8")
+    profile = profile_store.import_profile(ovpn, "Home VPN")
+    dest = profile_store.export_profile(profile.id, tmp_path / "home.ovpn")
+
+    profile_store.delete_profile(profile.id)
+    reimported = profile_store.import_profile(dest)
+
+    assert reimported.name == "Home VPN"
+    assert reimported.server == "my.vpn.test"
+
+
+def test_export_unknown_profile_raises(isolated_store: Path, tmp_path: Path) -> None:
+    with pytest.raises(KeyError):
+        profile_store.export_profile("nope", tmp_path / "x.ovpn")
+
+
+def test_suggested_export_filename() -> None:
+    p = profile_store.Profile(
+        id="1", name="Office / VPN: EU", server="s", port=1, protocol="udp",
+        config_path="",
+    )
+    assert profile_store.suggested_export_filename(p) == "Office_VPN_EU.ovpn"
+    p.name = "///"
+    assert profile_store.suggested_export_filename(p) == "profile.ovpn"
