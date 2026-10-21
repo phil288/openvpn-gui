@@ -28,6 +28,9 @@ class Profile:
     config_path: str
     needs_auth: bool = False
     allow_scripts: bool = False
+    # Original .ovpn the stored copy was imported from ("" for profiles
+    # imported before this was tracked).
+    source_path: str = ""
     last_used: str | None = None
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -220,6 +223,7 @@ def import_profile(
                 "config_path": str(dest),
                 "needs_auth": meta["needs_auth"],
                 "allow_scripts": allow_scripts,
+                "source_path": str(source_path),
             }
         )
         _save_index(entries)
@@ -239,6 +243,7 @@ def import_profile(
         config_path=str(dest),
         needs_auth=meta["needs_auth"],
         allow_scripts=allow_scripts,
+        source_path=str(source_path),
     )
     entries.append(profile.to_dict())
     _save_index(entries)

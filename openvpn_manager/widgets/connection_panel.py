@@ -45,6 +45,7 @@ class ConnectionPanel(QWidget):
     delete_clicked = Signal()
     rename_clicked = Signal()
     edit_credentials_clicked = Signal()
+    show_config_clicked = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -110,6 +111,21 @@ class ConnectionPanel(QWidget):
         stats_form.addRow("Duration", self._duration)
         layout.addWidget(stats_box)
 
+        file_box = QGroupBox("Profile file")
+        file_form = QFormLayout(file_box)
+        self._config_path = self._path_label()
+        self._source_path = self._path_label()
+        file_form.addRow("Stored at", self._config_path)
+        file_form.addRow("Imported from", self._source_path)
+        self._show_config_btn = QPushButton("Show in folder")
+        self._show_config_btn.clicked.connect(self.show_config_clicked.emit)
+        self._show_config_btn.setEnabled(False)
+        show_row = QHBoxLayout()
+        show_row.addWidget(self._show_config_btn)
+        show_row.addStretch(1)
+        file_form.addRow("", show_row)
+        layout.addWidget(file_box)
+
         log_box = QGroupBox("Log")
         log_layout = QVBoxLayout(log_box)
         self._log = QPlainTextEdit()
@@ -117,6 +133,15 @@ class ConnectionPanel(QWidget):
         self._log.setMaximumBlockCount(500)
         log_layout.addWidget(self._log)
         layout.addWidget(log_box, 1)
+
+    @staticmethod
+    def _path_label() -> QLabel:
+        label = QLabel("—")
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        return label
 
     def _on_connect_btn(self) -> None:
         # A running session (even while still connecting) means the button
@@ -142,6 +167,9 @@ class ConnectionPanel(QWidget):
             self._cred_btn.setEnabled(False)
             self._rename_btn.setEnabled(False)
             self._delete_btn.setEnabled(False)
+            self._config_path.setText("—")
+            self._source_path.setText("—")
+            self._show_config_btn.setEnabled(False)
             return
 
         self._title.setText(profile.name)
@@ -153,6 +181,9 @@ class ConnectionPanel(QWidget):
         self._cred_btn.setEnabled(profile.needs_auth)
         self._rename_btn.setEnabled(True)
         self._delete_btn.setEnabled(not is_active)
+        self._config_path.setText(profile.config_path or "—")
+        self._source_path.setText(profile.source_path or "Unknown")
+        self._show_config_btn.setEnabled(bool(profile.config_path))
         self._render_status(active=is_active, connected=is_connected)
 
     def _render_status(
