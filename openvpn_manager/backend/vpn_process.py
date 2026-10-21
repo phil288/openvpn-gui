@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import getpass
-import re
 import signal
 from os import close as os_close
 from os import environ as os_environ
@@ -32,6 +31,7 @@ from openvpn_manager.backend.privilege import (
 MANAGEMENT_HOST = "127.0.0.1"
 POLL_INTERVAL_SEC = 2.0
 CONNECT_TIMEOUT_SEC = 120.0
+HANDSHAKE_STALL_SEC = 10.0
 
 
 def _runtime_dir() -> Path:
@@ -87,6 +87,65 @@ class ConnectionStats:
     connected_since: float | None = None
 
 
+class HandshakeMonitor:
+    """Track TLS handshake progress from OpenVPN's log output.
+
+    OpenVPN only reports a stalled handshake once its ``hand-window``
+    (60 s by default) expires, and then retries forever. Following the log
+    lets the UI warn early and explain where the handshake stopped.
+    """
+
+    NO_REPLY = "no_reply"
+    SERVER_REPLIED = "server_replied"
+    SERVER_VERIFIED = "server_verified"
+    DONE = "done"
+
+    def __init__(self) -> None:
+        self.phase = self.NO_REPLY
+        self.failed = False
+        self._verified_at: float | None = None
+
+    def feed(self, line: str, now: float) -> None:
+        if "Peer Connection Initiated" in line:
+            self.phase = self.DONE
+        elif "TLS key negotiation failed" in line or "TLS handshake failed" in line:
+            self.failed = True
+        elif "VERIFY OK: depth=0" in line:
+            self.phase = self.SERVER_VERIFIED
+            self._verified_at = now
+        elif "TLS: Initial packet from" in line and self.phase == self.NO_REPLY:
+            self.phase = self.SERVER_REPLIED
+
+    def stalled(self, now: float) -> bool:
+        """True once the server has gone quiet after sending its certificate."""
+        return (
+            self.phase == self.SERVER_VERIFIED
+            and self._verified_at is not None
+            and now - self._verified_at >= HANDSHAKE_STALL_SEC
+        )
+
+    def failure_message(self) -> str:
+        if self.phase == self.SERVER_VERIFIED:
+            return (
+                "TLS handshake failed: the server sent a valid certificate, then "
+                "stopped responding after receiving this profile's client "
+                "certificate.\n\nThe server is most likely rejecting the client "
+                "certificate: it may be revoked, the server's CRL may have "
+                "expired, or the server's PKI was regenerated. Check the "
+                "server's OpenVPN log for \"VERIFY ERROR\" or \"CRL\"."
+            )
+        if self.phase == self.SERVER_REPLIED:
+            return (
+                "TLS handshake failed: the server answered but the handshake "
+                "did not complete. Check the server's OpenVPN log for the reason."
+            )
+        return (
+            "TLS handshake failed: no reply from the server. Check that it is "
+            "running and reachable on this port, and that the profile's "
+            "tls-auth / tls-crypt key matches the server's."
+        )
+
+
 class ManagementClient:
     """Talk to OpenVPN management interface (Unix socket or TCP)."""
 
@@ -101,6 +160,7 @@ class ManagementClient:
         self._host = host
         self._port = port
         self._sock: socket.socket | None = None
+        self._buf = b""
 
     def _target_label(self) -> str:
         if self._unix_path:
@@ -128,7 +188,8 @@ class ManagementClient:
                     )
                     sock.settimeout(5.0)
                 self._sock = sock
-                self._read_until_prompt()
+                self._buf = b""
+                self._read_greeting()
                 return
             except OSError as e:
                 last_err = e
@@ -145,30 +206,57 @@ class ManagementClient:
             except OSError:
                 pass
             self._sock = None
+        self._buf = b""
 
-    def _read_until_prompt(self, timeout: float = 5.0) -> str:
+    def _read_line(self) -> str | None:
+        """Return the next line from the socket, or None on EOF."""
+        while b"\n" not in self._buf:
+            chunk = self._sock.recv(4096) if self._sock else b""
+            if not chunk:
+                return None
+            self._buf += chunk
+        line, _, self._buf = self._buf.partition(b"\n")
+        return line.decode("utf-8", errors="replace").rstrip("\r")
+
+    def _read_greeting(self, timeout: float = 5.0) -> None:
+        """Consume the ``>INFO:`` banner OpenVPN sends on connect."""
+        if not self._sock:
+            return
+        self._sock.settimeout(timeout)
+        try:
+            self._read_line()
+        except OSError:
+            pass
+
+    def _read_response(self, timeout: float = 5.0) -> str:
+        """Read one command reply plus any interleaved notifications.
+
+        The management protocol has no prompt: a reply is a single
+        ``SUCCESS:``/``ERROR:`` line or a block ending in ``END``, and
+        real-time ``>`` notifications may arrive in between. Stopping on those
+        terminators avoids waiting out the socket timeout on every command.
+        """
         if not self._sock:
             return ""
-        if timeout > 0:
-            self._sock.settimeout(timeout)
-        buf = b""
+        self._sock.settimeout(timeout)
+        lines: list[str] = []
         try:
             while True:
-                chunk = self._sock.recv(4096)
-                if not chunk:
+                line = self._read_line()
+                if line is None:
                     break
-                buf += chunk
-                if b">" in buf[-64:] or buf.endswith(b">"):
+                lines.append(line)
+                if line == "END" or line.startswith(("SUCCESS:", "ERROR:")):
                     break
         except OSError:
             pass
-        return buf.decode("utf-8", errors="replace")
+        return "\n".join(lines)
 
     def command(self, cmd: str) -> str:
         if not self._sock:
             raise RuntimeError("Not connected to management interface")
         self._sock.sendall((cmd.strip() + "\n").encode("utf-8"))
-        return self._read_until_prompt()
+        return self._read_response()
 
     def send_credentials(self, username: str, password: str) -> None:
         # Strip CR/LF so a value can't inject additional management commands.
@@ -219,6 +307,7 @@ class VpnWorker(QThread):
         self._auth_file: Path | None = None
         self._mgmt_socket: Path | None = None
         self._output_thread: threading.Thread | None = None
+        self._handshake = HandshakeMonitor()
         self.stop_requested.connect(
             self._apply_stop, Qt.ConnectionType.QueuedConnection
         )
@@ -392,7 +481,7 @@ class VpnWorker(QThread):
                 state = parts[1].strip()  # keep the last (newest) entry
         return state
 
-    def _parse_bytecount(self, response: str) -> tuple[int, int]:
+    def _parse_bytecount(self, response: str) -> tuple[int, int] | None:
         for line in response.splitlines():
             if line.startswith(">BYTECOUNT:"):
                 parts = line.split(":")
@@ -404,7 +493,7 @@ class VpnWorker(QThread):
                 nums = line.split(":")[1].strip().split(",")
                 if len(nums) >= 2:
                     return int(nums[0]), int(nums[1])
-        return 0, 0
+        return None
 
     def _start_output_reader(self) -> None:
         """Drain openvpn stdout so the child cannot block on a full pipe."""
@@ -419,6 +508,7 @@ class VpnWorker(QThread):
                         break
                     text = line.rstrip()
                     if text:
+                        self._handshake.feed(text, time.monotonic())
                         self.log_line.emit(text)
             except (OSError, ValueError):
                 pass
@@ -433,19 +523,24 @@ class VpnWorker(QThread):
             time.sleep(min(0.2, end - time.monotonic()))
 
     def _parse_virtual_ip(self, response: str) -> str:
-        for line in response.splitlines():
-            m = re.search(
-                r"(?:ifconfig|ROUTE).*?(\d+\.\d+\.\d+\.\d+)", line, re.IGNORECASE
-            )
-            if m:
-                return m.group(1)
-            if "PUSH_REPLY" in line and "," in line:
-                for part in line.split(","):
-                    if "ifconfig" in part.lower():
-                        ips = re.findall(r"\d+\.\d+\.\d+\.\d+", part)
-                        if ips:
-                            return ips[0]
-        return ""
+        """Return the tunnel address from the newest CONNECTED state line.
+
+        State lines are ``time,state,desc,local-tun-ipv4,remote-addr,
+        remote-port,local-addr,local-port,local-tun-ipv6``; the IPv6 tunnel
+        address is used only when there is no IPv4 one.
+        """
+        vip = ""
+        for raw in response.splitlines():
+            line = raw.strip()
+            if line.startswith(">STATE:"):
+                line = line[len(">STATE:"):]
+            parts = line.split(",")
+            if len(parts) < 4 or not parts[0].isdigit() or parts[1] != "CONNECTED":
+                continue
+            ipv4 = parts[3].strip()
+            ipv6 = parts[8].strip() if len(parts) > 8 else ""
+            vip = ipv4 or ipv6 or vip
+        return vip
 
     @Slot()
     def run(self) -> None:
@@ -498,12 +593,32 @@ class VpnWorker(QThread):
             self._mgmt.command("bytecount 2")
             connected_at: float | None = None
             last_state = ""
+            stall_reported = False
 
             while not self._stop:
                 if self._process.poll() is not None:
                     code = self._process.returncode
                     self.error.emit(f"OpenVPN exited (code {code})")
                     break
+
+                # Before the first CONNECTED, a TLS failure would otherwise
+                # retry forever with no explanation. Afterwards, let OpenVPN
+                # ride out transient reconnect failures on its own.
+                if connected_at is None:
+                    if self._handshake.failed:
+                        self.error.emit(self._handshake.failure_message())
+                        break
+                    if not stall_reported and self._handshake.stalled(
+                        time.monotonic()
+                    ):
+                        stall_reported = True
+                        self.log_line.emit(
+                            f"No reply from the server {HANDSHAKE_STALL_SEC:.0f} s "
+                            "after its certificate was verified — it may be "
+                            "rejecting this client's certificate. OpenVPN gives "
+                            "up when its handshake window expires (60 s by "
+                            "default)."
+                        )
 
                 try:
                     state_resp = self._mgmt.command("state")
@@ -517,15 +632,15 @@ class VpnWorker(QThread):
                             connected_at = time.monotonic()
                             self.connected.emit()
 
-                    bc_resp = self._mgmt.command("bytecount")
-                    bytes_in, bytes_out = self._parse_bytecount(bc_resp)
-                    stats.bytes_in = bytes_in
-                    stats.bytes_out = bytes_out
+                    # ">BYTECOUNT:" notifications (enabled by "bytecount 2")
+                    # arrive interleaved with command replies.
+                    counts = self._parse_bytecount(state_resp)
+                    if counts:
+                        stats.bytes_in, stats.bytes_out = counts
                     stats.connected_since = connected_at
 
                     if state == "CONNECTED":
-                        ip_resp = self._mgmt.command("state")
-                        vip = self._parse_virtual_ip(ip_resp)
+                        vip = self._parse_virtual_ip(state_resp)
                         if vip:
                             stats.virtual_ip = vip
 
