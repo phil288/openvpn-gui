@@ -200,3 +200,31 @@ def test_suggested_export_filename() -> None:
     assert profile_store.suggested_export_filename(p) == "Office_VPN_EU.ovpn"
     p.name = "///"
     assert profile_store.suggested_export_filename(p) == "profile.ovpn"
+
+
+def test_import_records_source_path(isolated_store: Path, tmp_path: Path) -> None:
+    ovpn = tmp_path / "work.ovpn"
+    ovpn.write_text("remote my.vpn.test 1194 udp\n", encoding="utf-8")
+    profile = profile_store.import_profile(ovpn)
+    assert profile.source_path == str(ovpn.resolve())
+    assert profile_store.get_profile(profile.id).source_path == str(ovpn.resolve())
+
+    # Re-import from another file updates the recorded source.
+    other = tmp_path / "work-v2.ovpn"
+    other.write_text("remote my.vpn.test 1194 udp\n", encoding="utf-8")
+    replaced = profile_store.import_profile(other)
+    assert replaced.source_path == str(other.resolve())
+
+
+def test_legacy_profile_without_source_path_loads() -> None:
+    profile = profile_store.Profile.from_dict(
+        {
+            "id": "x",
+            "name": "Old",
+            "server": "s",
+            "port": 1194,
+            "protocol": "udp",
+            "config_path": "/tmp/x.ovpn",
+        }
+    )
+    assert profile.source_path == ""

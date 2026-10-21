@@ -4,8 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QResizeEvent
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import (
+    QDesktopServices,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -76,6 +83,7 @@ class MainWindow(OvpnDropMixin, QWidget):
         self._panel.rename_clicked.connect(self._rename_profile)
         self._panel.export_clicked.connect(self._export_profile)
         self._panel.edit_credentials_clicked.connect(self._edit_credentials)
+        self._panel.show_config_clicked.connect(self._show_config_file)
         splitter.addWidget(self._panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
@@ -352,6 +360,20 @@ class MainWindow(OvpnDropMixin, QWidget):
             critical(self, "Export failed", str(e))
             return
         self._panel.append_log(f"Exported {profile.name} to {dest}")
+
+    def _show_config_file(self) -> None:
+        """Open the folder holding the selected profile's stored .ovpn copy."""
+        if not self._selected_id:
+            return
+        profile = get_profile(self._selected_id)
+        if not profile:
+            return
+        config = Path(profile.config_path)
+        if not config.is_file():
+            warning(self, "File not found", f"Profile file is missing:\n{config}")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(config.parent))):
+            warning(self, "Cannot open folder", f"Could not open:\n{config.parent}")
 
     def _delete_profile(self) -> None:
         if not self._selected_id:
