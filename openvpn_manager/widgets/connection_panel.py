@@ -93,7 +93,7 @@ class ConnectionPanel(QWidget):
 
         self._export_btn = QPushButton("Export…")
         self._export_btn.setToolTip(
-            "Save this profile's connection settings as a .ovpn file "
+            "Save this profile's connection settings as a .ovpn / .conf file "
             "(saved credentials are not included)"
         )
         self._export_btn.clicked.connect(self.export_clicked.emit)
@@ -115,8 +115,9 @@ class ConnectionPanel(QWidget):
         self._route_all.setToolTip(
             "Off: only the VPN's own networks use the tunnel and the rest of "
             "your traffic stays on your local connection. On: honour the "
-            "server's default route — internet breaks if the server does not "
-            "forward it. Applies on the next connect."
+            "server's (OpenVPN) or config's (WireGuard AllowedIPs) default "
+            "route — internet breaks if the server does not forward it. "
+            "Applies on the next connect."
         )
         self._route_all.setEnabled(False)
         self._route_all.toggled.connect(self.route_all_toggled.emit)
@@ -184,7 +185,8 @@ class ConnectionPanel(QWidget):
         if not profile:
             self._title.setText("Select a profile")
             self._subtitle.setText(
-                "Drag and drop a .ovpn file here, or click Import…"
+                "Drag and drop a .ovpn or WireGuard .conf file here, paste a "
+                "config (Ctrl+V), or click Import…"
             )
             self._connect_btn.setEnabled(False)
             self._cred_btn.setEnabled(False)
@@ -199,9 +201,8 @@ class ConnectionPanel(QWidget):
 
         self._title.setText(profile.name)
         server = profile.server or "—"
-        self._subtitle.setText(
-            f"{server}:{profile.port} ({profile.protocol.upper()})"
-        )
+        protocol = "WireGuard" if profile.is_wireguard else profile.protocol.upper()
+        self._subtitle.setText(f"{server}:{profile.port} ({protocol})")
         self._connect_btn.setEnabled(True)
         self._cred_btn.setEnabled(profile.needs_auth)
         self._rename_btn.setEnabled(True)

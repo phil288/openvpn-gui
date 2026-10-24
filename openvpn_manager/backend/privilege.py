@@ -20,6 +20,16 @@ def openvpn_binary() -> str:
     )
 
 
+def wg_quick_binary() -> str:
+    for candidate in (shutil.which("wg-quick"), "/usr/bin/wg-quick"):
+        if candidate and Path(candidate).is_file():
+            return candidate
+    raise FileNotFoundError(
+        "wg-quick not found; install WireGuard tools "
+        "(dnf install wireguard-tools / apt install wireguard-tools)"
+    )
+
+
 def needs_elevation() -> bool:
     """Creating a TUN device requires root; writable /dev/net/tun is not enough."""
     return getuid() != 0
@@ -68,6 +78,11 @@ def wrap_openvpn_command(openvpn_args: list[str]) -> list[str]:
     Prefix openvpn invocation with sudo -n when elevation is required.
     openvpn_args must start with the openvpn binary path.
     """
+    return wrap_root_command(openvpn_args)
+
+
+def wrap_root_command(args: list[str]) -> list[str]:
+    """Prefix any root-needing command with sudo -n when not already root."""
     if not needs_elevation():
-        return openvpn_args
-    return ["sudo", "-n", *openvpn_args]
+        return args
+    return ["sudo", "-n", *args]

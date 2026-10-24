@@ -1,4 +1,4 @@
-"""Single-instance app with IPC to open .ovpn files in a running window."""
+"""Single-instance app with IPC to open profile files in a running window."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
-from openvpn_manager.widgets.ovpn_drop import OVPN_SUFFIX
+from openvpn_manager.widgets.ovpn_drop import PROFILE_SUFFIXES
 
 _SERVER_BASE = "openvpn-manager"
 
@@ -22,7 +22,7 @@ def _server_name() -> str:
 
 
 def ovpn_paths_from_argv(argv: list[str] | None = None) -> list[Path]:
-    """Collect .ovpn file paths from command-line arguments."""
+    """Collect .ovpn / WireGuard .conf file paths from command-line arguments."""
     argv = argv if argv is not None else sys.argv
     paths: list[Path] = []
     seen: set[Path] = set()
@@ -30,7 +30,7 @@ def ovpn_paths_from_argv(argv: list[str] | None = None) -> list[Path]:
         if arg.startswith("-"):
             continue
         path = Path(arg).expanduser()
-        if path.suffix.lower() != OVPN_SUFFIX:
+        if path.suffix.lower() not in PROFILE_SUFFIXES:
             continue
         try:
             resolved = path.resolve()
@@ -154,7 +154,7 @@ class SingleInstanceServer:
                     Path(p)
                     for p in raw
                     if isinstance(p, str)
-                    and Path(p).suffix.lower() == OVPN_SUFFIX
+                    and Path(p).suffix.lower() in PROFILE_SUFFIXES
                     and Path(p).is_file()
                 ]
                 self._on_files(paths)

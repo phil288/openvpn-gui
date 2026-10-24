@@ -1,25 +1,36 @@
-"""Profile storage: import .ovpn files and persist metadata."""
+"""Profile storage: import .ovpn / WireGuard .conf files and persist metadata."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
-import shutil
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from openvpn_manager.backend.wireguard_config import (
+    WIREGUARD_SUFFIX,
+    is_wireguard_config,
+    parse_wireguard_config,
+    scan_wireguard_risks,
+)
+
 CONFIG_DIR = Path.home() / ".config" / "openvpn-manager"
 PROFILES_DIR = CONFIG_DIR / "profiles"
 INDEX_FILE = CONFIG_DIR / "profiles.json"
 
+VPN_OPENVPN = "openvpn"
+VPN_WIREGUARD = "wireguard"
+OVPN_SUFFIX = ".ovpn"
+PROFILE_SUFFIXES = (OVPN_SUFFIX, WIREGUARD_SUFFIX)
+
 
 @dataclass
 class Profile:
-    """A saved OpenVPN profile."""
+    """A saved VPN profile (OpenVPN or WireGuard)."""
 
     id: str
     name: str
@@ -35,6 +46,9 @@ class Profile:
     # Off = split tunnel: server-pushed default routes are ignored so only the
     # VPN's own networks go through the tunnel.
     route_all_traffic: bool = False
+    # "openvpn" or "wireguard"; profiles saved before WireGuard support
+    # have no key and load as OpenVPN.
+    vpn_type: str = VPN_OPENVPN
     last_used: str | None = None
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -46,6 +60,10 @@ class Profile:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @property
+    def is_wireguard(self) -> bool:
+        return self.vpn_type == VPN_WIREGUARD
 
 
 # OpenVPN config directives that cause command, script, or shared-object
@@ -113,6 +131,15 @@ def _save_index(entries: list[dict[str, Any]]) -> None:
 # Comment header carrying the display name, so an exported profile keeps its
 # name when imported elsewhere.
 _NAME_HEADER = "# ovpn-profile:"
+
+
+def _header_name(content: str) -> str | None:
+    """Display name from an export header, if present."""
+    for line in content.splitlines():
+        line = line.strip()
+        if line.lower().startswith(_NAME_HEADER):
+            return line.split(":", 1)[1].strip() or None
+    return None
 
 
 def parse_ovpn_config(content: str) -> dict[str, Any]:
@@ -199,15 +226,80 @@ def import_profile(
     source_path = source_path.resolve()
     if not source_path.is_file():
         raise FileNotFoundError(f"Profile not found: {source_path}")
-    if source_path.suffix.lower() != ".ovpn":
-        raise ValueError("Only .ovpn files are supported")
+    suffix = source_path.suffix.lower()
+    if suffix not in PROFILE_SUFFIXES:
+        raise ValueError("Only .ovpn (OpenVPN) and .conf (WireGuard) files are supported")
 
     content = source_path.read_text(encoding="utf-8", errors="replace")
-    risks = scan_config_risks(content)
+    return _import_content(
+        content,
+        suffix,
+        str(source_path),
+        display_name or None,
+        source_path.stem,
+        allow_risky,
+    )
+
+
+_OVPN_REMOTE_RE = re.compile(r"^\s*remote\s+\S", re.MULTILINE | re.IGNORECASE)
+
+
+def detect_config_suffix(content: str) -> str | None:
+    """Profile suffix for pasted config text, or None if unrecognised."""
+    if is_wireguard_config(content):
+        return WIREGUARD_SUFFIX
+    if _OVPN_REMOTE_RE.search(content):
+        return OVPN_SUFFIX
+    return None
+
+
+def import_profile_text(
+    content: str,
+    display_name: str | None = None,
+    allow_risky: bool = False,
+) -> Profile:
+    """Import a profile from pasted config text (WireGuard or OpenVPN).
+
+    The type is detected from the content: a WireGuard ``[Interface]`` with a
+    ``PrivateKey``, or an OpenVPN config with a ``remote`` directive. Otherwise
+    behaves exactly like ``import_profile`` (dedupe, risk consent).
+    """
+    suffix = detect_config_suffix(content)
+    if suffix is None:
+        raise ValueError(
+            "Text is not a WireGuard config ([Interface] with a PrivateKey) "
+            "or an OpenVPN config (with a remote line)"
+        )
+    if not content.endswith("\n"):
+        content += "\n"
+    return _import_content(content, suffix, "", display_name, "", allow_risky)
+
+
+def _import_content(
+    content: str,
+    suffix: str,
+    source_label: str,
+    display_name: str | None,
+    fallback_name: str,
+    allow_risky: bool,
+) -> Profile:
+    if suffix == WIREGUARD_SUFFIX:
+        if not is_wireguard_config(content):
+            raise ValueError(
+                "Not a WireGuard config: expected an [Interface] section "
+                "with a PrivateKey"
+            )
+        vpn_type = VPN_WIREGUARD
+        risks = scan_wireguard_risks(content)
+        meta = parse_wireguard_config(content)
+        meta["name"] = _header_name(content) or meta["name"]
+    else:
+        vpn_type = VPN_OPENVPN
+        risks = scan_config_risks(content)
+        meta = parse_ovpn_config(content)
     if risks and not allow_risky:
         raise RiskyConfigError(risks)
     allow_scripts = bool(risks)  # consented script execution for this profile
-    meta = parse_ovpn_config(content)
 
     entries = _load_index()
     new_key = _identity_key(meta["server"], meta["port"], meta["protocol"])
@@ -224,8 +316,8 @@ def import_profile(
     if existing is not None:
         # Replace: reuse id + config path so credentials stay associated.
         profile_id = existing["id"]
-        dest = Path(existing.get("config_path") or PROFILES_DIR / f"{profile_id}.ovpn")
-        shutil.copy2(source_path, dest)
+        dest = Path(existing.get("config_path") or PROFILES_DIR / f"{profile_id}{suffix}")
+        _store_config(content, dest)
         existing.update(
             {
                 "name": display_name or existing.get("name") or meta["name"],
@@ -235,17 +327,18 @@ def import_profile(
                 "config_path": str(dest),
                 "needs_auth": meta["needs_auth"],
                 "allow_scripts": allow_scripts,
-                "source_path": str(source_path),
+                "source_path": source_label,
+                "vpn_type": vpn_type,
             }
         )
         _save_index(entries)
         return Profile.from_dict(existing)
 
     profile_id = str(uuid.uuid4())
-    dest = PROFILES_DIR / f"{profile_id}.ovpn"
-    shutil.copy2(source_path, dest)
+    dest = PROFILES_DIR / f"{profile_id}{suffix}"
+    _store_config(content, dest)
 
-    name = display_name or meta["name"] or source_path.stem
+    name = display_name or meta["name"] or fallback_name
     profile = Profile(
         id=profile_id,
         name=name,
@@ -255,11 +348,28 @@ def import_profile(
         config_path=str(dest),
         needs_auth=meta["needs_auth"],
         allow_scripts=allow_scripts,
-        source_path=str(source_path),
+        source_path=source_label,
+        vpn_type=vpn_type,
+        # A WireGuard config states its routing itself (AllowedIPs), unlike
+        # OpenVPN where the server pushes it — honour a full-tunnel config.
+        route_all_traffic=bool(meta.get("full_tunnel")),
     )
     entries.append(profile.to_dict())
     _save_index(entries)
     return profile
+
+
+def _store_config(content: str, dest: Path) -> None:
+    """Write the stored config owner-only: WireGuard configs hold the
+    PrivateKey and .ovpn files often embed <key>/<tls-auth> material."""
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        os.fchmod(f.fileno(), 0o600)
+        f.write(content)
+
+
+def profile_suffix(profile: Profile) -> str:
+    return WIREGUARD_SUFFIX if profile.is_wireguard else OVPN_SUFFIX
 
 
 def delete_profile(profile_id: str) -> bool:
@@ -291,17 +401,18 @@ def rename_profile(profile_id: str, new_name: str) -> Profile | None:
 
 
 def suggested_export_filename(profile: Profile) -> str:
-    """Filesystem-safe ``<name>.ovpn`` for the export save dialog."""
+    """Filesystem-safe ``<name>.ovpn`` / ``<name>.conf`` for the save dialog."""
     stem = re.sub(r"[^\w.-]+", "_", profile.name).strip("._")
-    return f"{stem or 'profile'}.ovpn"
+    return f"{stem or 'profile'}{profile_suffix(profile)}"
 
 
 def export_profile(profile_id: str, dest: Path) -> Path:
-    """Write a profile's connection settings to ``dest`` as a .ovpn file.
+    """Write a profile's connection settings to ``dest`` (.ovpn or .conf).
 
     The stored config is written verbatim with a ``# ovpn-profile: <name>``
     header prepended (replacing any existing one) so re-importing it restores
-    the display name. A ``.ovpn`` suffix is added when missing.
+    the display name (wg-quick ignores it as a comment). The profile type's
+    suffix is added when missing.
 
     Saved VPN credentials live in the keyring and are never exported. The
     config itself may embed private keys (``<key>``, ``<tls-auth>`` …), so the
@@ -315,8 +426,9 @@ def export_profile(profile_id: str, dest: Path) -> Path:
         raise FileNotFoundError(f"Profile config missing: {source}")
 
     dest = Path(dest)
-    if dest.suffix.lower() != ".ovpn":
-        dest = dest.with_name(dest.name + ".ovpn")
+    suffix = profile_suffix(profile)
+    if dest.suffix.lower() != suffix:
+        dest = dest.with_name(dest.name + suffix)
 
     content = source.read_text(encoding="utf-8", errors="replace")
     body = "".join(

@@ -1,4 +1,4 @@
-"""OpenVPN subprocess control via management interface."""
+"""VPN subprocess control: OpenVPN via its management interface, WireGuard via wg-quick."""
 
 from __future__ import annotations
 
@@ -25,13 +25,26 @@ from openvpn_manager.backend.privilege import (
     needs_elevation,
     openvpn_binary,
     sudo_ticket_valid,
+    wg_quick_binary,
     wrap_openvpn_command,
+    wrap_root_command,
+)
+from openvpn_manager.backend.wireguard_config import (
+    build_runtime_config,
+    first_address,
 )
 
 MANAGEMENT_HOST = "127.0.0.1"
 POLL_INTERVAL_SEC = 2.0
 CONNECT_TIMEOUT_SEC = 120.0
 HANDSHAKE_STALL_SEC = 10.0
+WG_QUICK_TIMEOUT_SEC = 60.0
+# Warn when a WireGuard tunnel has received nothing this long after coming up:
+# WireGuard has no connect handshake to fail, so a wrong key or unreachable
+# endpoint otherwise looks "connected" forever.
+WG_NO_RX_WARN_SEC = 15.0
+SYS_CLASS_NET = Path("/sys/class/net")
+WG_CONFIG_DIR = Path("/etc/wireguard")
 
 # Server-pushed options that send *all* traffic into the tunnel. Filtered out
 # unless the profile opts into full tunnelling, so a server that pushes a
@@ -706,6 +719,194 @@ class VpnWorker(QThread):
                 self._mgmt_socket = None
 
 
+def wireguard_interface_name(profile_id: str) -> str:
+    """Kernel interface name for a profile (wg-quick: ≤15 chars, from filename)."""
+    stem = "".join(c for c in profile_id if c.isalnum())[:8] or "0"
+    return f"wgm-{stem}"
+
+
+class WireGuardWorker(QThread):
+    """Background thread: bring a WireGuard interface up with wg-quick and
+    report traffic from sysfs until stopped.
+
+    Exposes the same signals as ``VpnWorker`` so the controller and UI treat
+    both tunnel types alike.
+    """
+
+    status_changed = Signal(str)
+    stats_updated = Signal(object)
+    log_line = Signal(str)
+    connected = Signal()
+    disconnected = Signal(str)
+    error = Signal(str)
+
+    def __init__(
+        self,
+        profile_id: str,
+        config_path: Path,
+        allow_scripts: bool = False,
+        route_all_traffic: bool = False,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._config_path = config_path
+        self._allow_scripts = allow_scripts
+        self._route_all_traffic = route_all_traffic
+        self._ifname = wireguard_interface_name(profile_id)
+        self._runtime_conf: Path | None = None
+        self._stop = False
+
+    def request_stop(self) -> None:
+        """Request shutdown from the UI thread (non-blocking)."""
+        self._stop = True
+
+    def _interface_exists(self) -> bool:
+        return (SYS_CLASS_NET / self._ifname).exists()
+
+    def _read_counter(self, name: str) -> int:
+        try:
+            path = SYS_CLASS_NET / self._ifname / "statistics" / name
+            return int(path.read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            return 0
+
+    def _write_runtime_config(self) -> str:
+        """Install the wg-quick config as root-owned 0600 in /etc/wireguard.
+
+        Distro MAC policies confine wg-quick to its config directory (Ubuntu's
+        AppArmor profile only allows ``/etc/wireguard/**``), so it can't read a
+        file from the user's runtime dir. The text is piped through ``install``
+        on stdin so the private key never lands in a user-owned file.
+        """
+        content = self._config_path.read_text(encoding="utf-8", errors="replace")
+        text, notes = build_runtime_config(
+            content, self._route_all_traffic, self._allow_scripts
+        )
+        for note in notes:
+            self.log_line.emit(note)
+        path = WG_CONFIG_DIR / f"{self._ifname}.conf"
+        if not (
+            self._run_root(["install", "-d", "-m", "700", os_fspath(WG_CONFIG_DIR)])
+            and self._run_root(
+                ["install", "-m", "600", "/dev/stdin", os_fspath(path)],
+                input_text=text,
+            )
+        ):
+            raise RuntimeError(f"Could not write WireGuard config {path}")
+        self._runtime_conf = path
+        return content
+
+    def _run_root(
+        self,
+        args: list[str],
+        input_text: str | None = None,
+        timeout: float = WG_QUICK_TIMEOUT_SEC,
+    ) -> bool:
+        """Run a command as root (sudo -n when needed), logging its output."""
+        try:
+            result = subprocess.run(
+                wrap_root_command(args),
+                input=input_text,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            self.log_line.emit(f"{Path(args[0]).name} {args[1]} timed out")
+            return False
+        for line in (result.stdout + result.stderr).splitlines():
+            if line.strip():
+                self.log_line.emit(line.rstrip())
+        return result.returncode == 0
+
+    def _wg_quick(self, action: str) -> bool:
+        """Run ``wg-quick up|down`` on the installed config."""
+        assert self._runtime_conf is not None
+        return self._run_root(
+            [wg_quick_binary(), action, os_fspath(self._runtime_conf)]
+        )
+
+    def _cleanup_runtime_config(self) -> None:
+        if self._runtime_conf:
+            self._run_root(["rm", "-f", os_fspath(self._runtime_conf)], timeout=10)
+            self._runtime_conf = None
+
+    @Slot()
+    def run(self) -> None:
+        stats = ConnectionStats(state="CONNECTING")
+        self.status_changed.emit(stats.state)
+        brought_up = False
+
+        try:
+            if needs_elevation() and not sudo_ticket_valid():
+                raise RuntimeError(
+                    "Administrator access expired. Connect again and enter your "
+                    "login password when prompted."
+                )
+            content = self._write_runtime_config()
+            if self._interface_exists():
+                # Left over from a crash or a session the app lost track of.
+                self.log_line.emit(f"Removing stale interface {self._ifname}")
+                self._wg_quick("down")
+            self.log_line.emit(f"Launching: wg-quick up {self._ifname}")
+            if not self._wg_quick("up"):
+                raise RuntimeError(
+                    "wg-quick could not bring the tunnel up. Check the log above."
+                )
+            brought_up = True
+            if self._stop:
+                return
+
+            connected_at = time.monotonic()
+            stats.state = "CONNECTED"
+            stats.connected_since = connected_at
+            stats.virtual_ip = first_address(content)
+            self.status_changed.emit(stats.state)
+            self.log_line.emit("State: CONNECTED")
+            self.connected.emit()
+            rx_warned = False
+
+            while not self._stop:
+                if not self._interface_exists():
+                    brought_up = False
+                    self.error.emit(
+                        f"WireGuard interface {self._ifname} went away"
+                    )
+                    break
+                stats.bytes_in = self._read_counter("rx_bytes")
+                stats.bytes_out = self._read_counter("tx_bytes")
+                self.stats_updated.emit(stats)
+                if (
+                    not rx_warned
+                    and stats.bytes_in == 0
+                    and time.monotonic() - connected_at >= WG_NO_RX_WARN_SEC
+                ):
+                    rx_warned = True
+                    self.log_line.emit(
+                        f"Nothing received from the peer {WG_NO_RX_WARN_SEC:.0f} s "
+                        "after the tunnel came up — check that the endpoint is "
+                        "reachable and that the keys match the server's."
+                    )
+                end = time.monotonic() + POLL_INTERVAL_SEC
+                while time.monotonic() < end and not self._stop:
+                    time.sleep(0.2)
+
+        except Exception as e:
+            if not self._stop:
+                self.error.emit(str(e))
+        finally:
+            if brought_up and self._runtime_conf:
+                self.log_line.emit(f"Stopping: wg-quick down {self._ifname}")
+                if not self._wg_quick("down"):
+                    self.error.emit(
+                        f"Could not remove WireGuard interface {self._ifname}. "
+                        f"Run: sudo ip link delete {self._ifname}"
+                    )
+            self._cleanup_runtime_config()
+            self.disconnected.emit(stats.state)
+
+
 class VpnController(QObject):
     """High-level VPN session controller for the UI."""
 
@@ -718,9 +919,10 @@ class VpnController(QObject):
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._worker: VpnWorker | None = None
+        self._worker: VpnWorker | WireGuardWorker | None = None
         self._active_profile_id: str | None = None
-        self._pending_connect: tuple[str, Path, str, str, bool, bool] | None = None
+        self._active_vpn_type = "openvpn"
+        self._pending_connect: tuple[str, Path, str, str, bool, bool, str] | None = None
         self._tunnel_connected = False
 
     @property
@@ -737,6 +939,15 @@ class VpnController(QObject):
     def active_profile_id(self) -> str | None:
         return self._active_profile_id
 
+    @property
+    def active_needs_root_to_stop(self) -> bool:
+        """True when stopping the session runs a root command (wg-quick down).
+
+        OpenVPN stops through its management socket; WireGuard needs a valid
+        sudo ticket, so the UI must refresh it before disconnecting.
+        """
+        return self.is_connected and self._active_vpn_type == "wireguard"
+
     def connect_profile(
         self,
         profile_id: str,
@@ -745,6 +956,7 @@ class VpnController(QObject):
         password: str = "",
         allow_scripts: bool = False,
         route_all_traffic: bool = False,
+        vpn_type: str = "openvpn",
     ) -> None:
         if self._worker and self._worker.isRunning():
             self._pending_connect = (
@@ -754,6 +966,7 @@ class VpnController(QObject):
                 password,
                 allow_scripts,
                 route_all_traffic,
+                vpn_type,
             )
             self.disconnect()
             return
@@ -764,6 +977,7 @@ class VpnController(QObject):
             password,
             allow_scripts,
             route_all_traffic,
+            vpn_type,
         )
 
     def _start_worker(
@@ -774,17 +988,27 @@ class VpnController(QObject):
         password: str,
         allow_scripts: bool = False,
         route_all_traffic: bool = False,
+        vpn_type: str = "openvpn",
     ) -> None:
         self._active_profile_id = profile_id
+        self._active_vpn_type = vpn_type
         self._tunnel_connected = False
-        self._worker = VpnWorker(
-            config_path,
-            0,
-            username,
-            password,
-            allow_scripts=allow_scripts,
-            route_all_traffic=route_all_traffic,
-        )
+        if vpn_type == "wireguard":
+            self._worker = WireGuardWorker(
+                profile_id,
+                config_path,
+                allow_scripts=allow_scripts,
+                route_all_traffic=route_all_traffic,
+            )
+        else:
+            self._worker = VpnWorker(
+                config_path,
+                0,
+                username,
+                password,
+                allow_scripts=allow_scripts,
+                route_all_traffic=route_all_traffic,
+            )
         self._worker.status_changed.connect(self._on_worker_status)
         self._worker.stats_updated.connect(self.stats_updated.emit)
         self._worker.log_line.connect(self.log_line.emit)

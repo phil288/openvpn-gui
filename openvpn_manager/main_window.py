@@ -7,6 +7,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import (
     QDesktopServices,
+    QKeySequence,
+    QShortcut,
     QDragEnterEvent,
     QDragLeaveEvent,
     QDragMoveEvent,
@@ -14,6 +16,7 @@ from PySide6.QtGui import (
     QResizeEvent,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -31,8 +34,11 @@ from openvpn_manager.backend.profile_store import (
     delete_profile,
     export_profile,
     get_profile,
+    detect_config_suffix,
     import_profile,
+    import_profile_text,
     list_profiles,
+    PROFILE_SUFFIXES,
     profile_needs_auth,
     rename_profile,
     RiskyConfigError,
@@ -102,6 +108,9 @@ class MainWindow(OvpnDropMixin, QWidget):
         self._drop_overlay.files_dropped.connect(self._import_dropped_files)
         self._sync_drop_overlay_geometry()
 
+        paste = QShortcut(QKeySequence.StandardKey.Paste, self)
+        paste.activated.connect(self._paste_profile)
+
         self._vpn.status_changed.connect(self._on_status)
         self._vpn.stats_updated.connect(self._on_stats)
         self._vpn.log_line.connect(self._panel.append_log)
@@ -139,12 +148,14 @@ class MainWindow(OvpnDropMixin, QWidget):
             self._connect_profile(self._selected_id)
 
     def _on_disconnect_clicked(self) -> None:
+        if self._vpn.active_needs_root_to_stop and not self.ensure_elevation():
+            return
         if self._vpn.is_connected:
             self._panel.set_connection_state(False, False, "Disconnecting…")
             self._panel.append_log("Disconnecting…")
         self._vpn.disconnect()
 
-    def _ensure_elevation(self) -> bool:
+    def ensure_elevation(self) -> bool:
         """Authorize sudo when needed via its time-limited timestamp.
 
         The login password is only used to validate the sudo timestamp for this
@@ -172,7 +183,7 @@ class MainWindow(OvpnDropMixin, QWidget):
         if not profile:
             return
 
-        if not self._ensure_elevation():
+        if not self.ensure_elevation():
             return
 
         username, password = "", ""
@@ -200,6 +211,7 @@ class MainWindow(OvpnDropMixin, QWidget):
             password,
             allow_scripts=profile.allow_scripts,
             route_all_traffic=profile.route_all_traffic,
+            vpn_type=profile.vpn_type,
         )
         self._selected_id = profile_id
         touch_last_used(profile_id)
@@ -234,7 +246,9 @@ class MainWindow(OvpnDropMixin, QWidget):
 
     def open_ovpn_files(self, paths: list[Path]) -> None:
         """Import profiles from file paths (CLI or second instance)."""
-        ovpn = [p for p in paths if p.suffix.lower() == ".ovpn" and p.is_file()]
+        ovpn = [
+            p for p in paths if p.suffix.lower() in PROFILE_SUFFIXES and p.is_file()
+        ]
         if ovpn:
             self.showNormal()
             self.raise_()
@@ -242,20 +256,27 @@ class MainWindow(OvpnDropMixin, QWidget):
             self._import_dropped_files(ovpn)
 
     def _import_one(self, path: Path, name: str | None) -> Profile | None:
-        """Import a single profile, prompting for consent on risky configs.
+        """Import a single profile file, prompting for consent on risky configs.
 
         Returns the imported Profile, or None if the user declined a profile
         that would execute commands as root.
         """
+        return self._import_with_consent(
+            f"“{path.name}”",
+            lambda allow_risky: import_profile(path, name, allow_risky=allow_risky),
+        )
+
+    def _import_with_consent(self, label: str, do_import) -> Profile | None:
+        """Run ``do_import(allow_risky)``, asking before allowing root scripts."""
         try:
-            return import_profile(path, name)
+            return do_import(False)
         except RiskyConfigError as risk:
             lines = "\n".join(f"    {line}" for _, line in risk.risks[:8])
             more = "\n    …" if len(risk.risks) > 8 else ""
             if not question_yes_no(
                 self,
                 "Profile runs commands as root",
-                f"“{path.name}” contains OpenVPN directives that execute "
+                f"{label} contains directives that execute "
                 "commands, scripts, or plugins as root when you connect:\n\n"
                 f"{lines}{more}\n\n"
                 "Only import profiles from sources you fully trust. "
@@ -263,14 +284,14 @@ class MainWindow(OvpnDropMixin, QWidget):
                 default_no=True,
             ):
                 return None
-            return import_profile(path, name, allow_risky=True)
+            return do_import(True)
 
     def _import_dropped_files(
         self,
         paths: list[Path],
         display_names: dict[Path, str | None] | None = None,
     ) -> None:
-        """Import one or more .ovpn files dropped onto the window."""
+        """Import one or more .ovpn / WireGuard .conf files."""
         imported: list[Profile] = []
         errors: list[str] = []
         names = display_names or {}
@@ -283,6 +304,42 @@ class MainWindow(OvpnDropMixin, QWidget):
             except (OSError, ValueError) as e:
                 errors.append(f"{path.name}: {e}")
 
+        self._finish_import(imported, errors)
+
+    def _import_text(self, text: str, name: str | None = None) -> None:
+        """Import a profile from pasted WireGuard / OpenVPN config text."""
+        try:
+            profile = self._import_with_consent(
+                "The pasted config",
+                lambda allow_risky: import_profile_text(
+                    text, name, allow_risky=allow_risky
+                ),
+            )
+        except (OSError, ValueError) as e:
+            critical(self, "Import failed", str(e))
+            return
+        self._finish_import([profile] if profile else [], [])
+
+    def _paste_profile(self) -> None:
+        """Ctrl+V: import profile files or config text from the clipboard."""
+        mime = QApplication.clipboard().mimeData()
+        paths = paths_from_mime(mime) if mime else []
+        if paths:
+            self._import_dropped_files(paths)
+            return
+        text = mime.text() if mime and mime.hasText() else ""
+        if text.strip() and detect_config_suffix(text):
+            self._import_text(text)
+        else:
+            warning(
+                self,
+                "Nothing to import",
+                "The clipboard does not contain a WireGuard or OpenVPN "
+                "config, or a .ovpn / .conf file.",
+            )
+
+    def _finish_import(self, imported: list[Profile], errors: list[str]) -> None:
+        """Select the new profile(s), ask for credentials, and report."""
         if not imported:
             if errors:
                 critical(self, "Import failed", "\n".join(errors))
@@ -317,6 +374,10 @@ class MainWindow(OvpnDropMixin, QWidget):
     def _import_profile(self) -> None:
         dlg = ImportDialog(self)
         if dlg.exec() != ImportDialog.DialogCode.Accepted:
+            return
+        text = dlg.pasted_text()
+        if text:
+            self._import_text(text, dlg.display_name())
             return
         path = dlg.source_path()
         if not path:
@@ -353,7 +414,9 @@ class MainWindow(OvpnDropMixin, QWidget):
             self,
             "Export connection settings",
             str(Path.home() / suggested_export_filename(profile)),
-            "OpenVPN profiles (*.ovpn)",
+            "WireGuard configs (*.conf)"
+            if profile.is_wireguard
+            else "OpenVPN profiles (*.ovpn)",
         )
         if not path:
             return
@@ -365,7 +428,7 @@ class MainWindow(OvpnDropMixin, QWidget):
         self._panel.append_log(f"Exported {profile.name} to {dest}")
 
     def _show_config_file(self) -> None:
-        """Open the folder holding the selected profile's stored .ovpn copy."""
+        """Open the folder holding the selected profile's stored config copy."""
         if not self._selected_id:
             return
         profile = get_profile(self._selected_id)
@@ -463,6 +526,8 @@ class MainWindow(OvpnDropMixin, QWidget):
                 self._connect_profile(profiles[0].id)
 
     def disconnect_active(self) -> None:
+        if self._vpn.active_needs_root_to_stop and not self.ensure_elevation():
+            return
         self._vpn.disconnect()
 
     def closeEvent(self, event) -> None:

@@ -217,7 +217,13 @@ class OpenVpnManagerApp(QApplication):
         if self._tray and self._tray._tray:
             self._tray._tray.hide()
         if self._vpn.is_connected:
-            self._vpn.disconnect(wait_ms=1500)
+            if self._vpn.active_needs_root_to_stop:
+                # wg-quick down needs root; refresh sudo so the interface is
+                # removed instead of outliving the app.
+                self._window.ensure_elevation()
+                self._vpn.disconnect(wait_ms=5000)
+            else:
+                self._vpn.disconnect(wait_ms=1500)
         self._instance_server.close()
         self.quit()
         QTimer.singleShot(500, lambda: os._exit(0))

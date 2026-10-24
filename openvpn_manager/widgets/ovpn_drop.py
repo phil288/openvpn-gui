@@ -1,4 +1,4 @@
-"""Shared drag-and-drop helpers for .ovpn profile files."""
+"""Shared drag-and-drop helpers for .ovpn / WireGuard .conf profile files."""
 
 from __future__ import annotations
 
@@ -8,13 +8,12 @@ from PySide6.QtCore import Qt, Signal, QMimeData
 from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
+from openvpn_manager.backend.profile_store import OVPN_SUFFIX, PROFILE_SUFFIXES
 from openvpn_manager.widgets.theme import enable_styled_background
-
-OVPN_SUFFIX = ".ovpn"
 
 
 def paths_from_mime(mime: QMimeData) -> list[Path]:
-    """Return existing .ovpn file paths from a drag-and-drop mime payload."""
+    """Return existing profile file paths from a drag-and-drop mime payload."""
     if not mime.hasUrls():
         return []
     paths: list[Path] = []
@@ -24,7 +23,7 @@ def paths_from_mime(mime: QMimeData) -> list[Path]:
         if not local:
             continue
         path = Path(local)
-        if path.suffix.lower() != OVPN_SUFFIX or not path.is_file():
+        if path.suffix.lower() not in PROFILE_SUFFIXES or not path.is_file():
             continue
         resolved = path.resolve()
         if resolved not in seen:
@@ -74,7 +73,7 @@ class DropOverlay(QWidget):
         self.hide()
 
         layout = QVBoxLayout(self)
-        self._hint = QLabel("Drop .ovpn file(s) to import")
+        self._hint = QLabel("Drop .ovpn or WireGuard .conf file(s) to import")
         self._hint.setObjectName("dropOverlayHint")
         self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._hint)

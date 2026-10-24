@@ -5,6 +5,7 @@ Desktop GUI for managing OpenVPN connections on Fedora and Ubuntu — similar to
 ## Features
 
 - Import `.ovpn` profiles (file picker or drag-and-drop)
+- Import and connect **WireGuard** `.conf` configs (via `wg-quick`)
 - One-click connect / disconnect
 - Real-time stats (VPN IP, bytes in/out, duration)
 - VPN profile credentials stored in the **system keyring** (GNOME Keyring / KWallet)
@@ -18,6 +19,11 @@ Desktop GUI for managing OpenVPN connections on Fedora and Ubuntu — similar to
 - `openvpn`:
   - Fedora: `sudo dnf install openvpn`
   - Ubuntu: `sudo apt install openvpn`
+- For WireGuard profiles only: `wireguard-tools` (`wg-quick`), plus a
+  `resolvconf` provider if a config sets `DNS =` (systemd-resolved's shim or
+  `openresolv`):
+  - Fedora: `sudo dnf install wireguard-tools`
+  - Ubuntu: `sudo apt install wireguard-tools`
 
 ## Install
 
@@ -57,11 +63,12 @@ openvpn-manager
 
 ## Usage
 
-1. **Double-click** a `.ovpn` file, **drag and drop** onto the window, or use **Import…**. Profiles that run commands as root (e.g. `up`/`down`/`plugin`) prompt for confirmation before import.
+1. **Double-click** a `.ovpn` file, **drag and drop** onto the window, use **Import…**, or **paste** a WireGuard/OpenVPN config as text (the Import… text box, or **Ctrl+V** in the main window — the type is detected from the content). Profiles that run commands as root (e.g. `up`/`down`/`plugin`) prompt for confirmation before import.
 2. Click **Connect**. The first time elevation is needed, enter your **login password** — it authorizes sudo for this session only and is never stored.
 3. Later connects reuse the **sudo cache** (typically several minutes); re-enter the password once it expires, or install the PolicyKit policy for passwordless connects.
 4. VPN usernames/passwords (`auth-user-pass`) are separate — use **Credentials…** per profile.
-5. Close the window to keep running in the tray; use **Exit application** from the tray menu to quit.
+5. **WireGuard:** import a wg-quick `.conf` (it must contain `[Interface]` with a `PrivateKey`). The stored copy is kept owner-only (0600). `PreUp`/`PostUp`/`PreDown`/`PostDown` commands need consent at import, like OpenVPN scripts. A config whose `AllowedIPs` includes `0.0.0.0/0` or `::/0` imports with **Route all internet traffic** on; turn it off to drop those default routes (and VPN DNS servers outside the tunnel) for a split tunnel. Disconnecting runs `wg-quick down` as root, so an expired sudo cache asks for your password again.
+6. Close the window to keep running in the tray; use **Exit application** from the tray menu to quit.
 
 ## How elevation works
 
