@@ -206,6 +206,10 @@ QMessageBox {
 QMessageBox QLabel {
     color: #e8eaed;
     background-color: transparent;
+}
+
+/* Width only on the text label: on the icon label it opens a wide gap. */
+QMessageBox QLabel#qt_msgbox_label {
     min-width: 300px;
 }
 
