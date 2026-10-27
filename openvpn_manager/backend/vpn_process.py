@@ -21,6 +21,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 
+from openvpn_manager.backend.openvpn_security import SecurityMonitor, audit_config
 from openvpn_manager.backend.privilege import (
     needs_elevation,
     openvpn_binary,
@@ -339,6 +340,7 @@ class VpnWorker(QThread):
         self._mgmt_socket: Path | None = None
         self._output_thread: threading.Thread | None = None
         self._handshake = HandshakeMonitor()
+        self._security = SecurityMonitor()
         self.stop_requested.connect(
             self._apply_stop, Qt.ConnectionType.QueuedConnection
         )
@@ -488,6 +490,21 @@ class VpnWorker(QThread):
         )
         return forced
 
+    def _check_config_security(self) -> None:
+        """Refuse to start a profile whose settings leave traffic exposed."""
+        try:
+            text = self._config_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return  # OpenVPN reports the unreadable file itself
+        problems = audit_config(text)
+        if problems:
+            raise RuntimeError(
+                "This profile is not secure, so it was not connected:\n\n"
+                + "\n".join(f"• {p}" for p in problems)
+                + "\n\nFix the profile (or ask the server admin for an "
+                "updated one) and import it again."
+            )
+
     def _pid_file_path(self) -> Path:
         return _runtime_dir() / f"openvpn-{os_getpid()}.pid"
 
@@ -549,6 +566,7 @@ class VpnWorker(QThread):
                     text = line.rstrip()
                     if text:
                         self._handshake.feed(text, time.monotonic())
+                        self._security.feed(text)
                         self.log_line.emit(text)
             except (OSError, ValueError):
                 pass
@@ -594,6 +612,7 @@ class VpnWorker(QThread):
                     "Administrator access expired. Connect again and enter your "
                     "login password when prompted."
                 )
+            self._check_config_security()
             cmd = self._build_command(self._mgmt_socket)
             self.log_line.emit(
                 "Launching: "
@@ -640,6 +659,9 @@ class VpnWorker(QThread):
                     code = self._process.returncode
                     self.error.emit(f"OpenVPN exited (code {code})")
                     break
+                if self._security.problem:
+                    self.error.emit(self._security.problem)
+                    break
 
                 # Before the first CONNECTED, a TLS failure would otherwise
                 # retry forever with no explanation. Afterwards, let OpenVPN
@@ -663,6 +685,11 @@ class VpnWorker(QThread):
                 try:
                     state_resp = self._mgmt.command("state")
                     state = self._parse_state(state_resp) or last_state
+                    # The reader may have seen an insecure negotiation since
+                    # the top of the loop; never report such a tunnel as up.
+                    if self._security.problem:
+                        self.error.emit(self._security.problem)
+                        break
                     if state and state != last_state:
                         last_state = state
                         stats.state = state
@@ -670,6 +697,11 @@ class VpnWorker(QThread):
                         self.log_line.emit(f"State: {state}")
                         if state == "CONNECTED" and connected_at is None:
                             connected_at = time.monotonic()
+                            if self._security.data_cipher:
+                                self.log_line.emit(
+                                    "Data channel encryption: "
+                                    f"{self._security.data_cipher}"
+                                )
                             self.connected.emit()
 
                     # ">BYTECOUNT:" notifications (enabled by "bytecount 2")
